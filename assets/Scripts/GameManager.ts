@@ -158,6 +158,7 @@ export class GameManager extends cc.Component {
     private progressFill: cc.Node = null;
     private highScore = 0;
     private audioClips: { [key: string]: cc.AudioClip } = {};
+    private pendingMusicKey = "";
     private atlases: { [key: string]: cc.SpriteAtlas } = {};
     private frames: { [key: string]: cc.SpriteFrame } = {};
     private firebaseReady = false;
@@ -297,6 +298,7 @@ export class GameManager extends cc.Component {
         this.hideAuthDomInputs();
         this.state = next;
         cc.audioEngine.stopMusic();
+        this.pendingMusicKey = "";
         this.overlay.removeAllChildren();
         this.overlay.active = true;
 
@@ -1460,19 +1462,36 @@ export class GameManager extends cc.Component {
         };
         Object.keys(paths).forEach((key) => {
             cc.loader.loadRes(paths[key], cc.AudioClip, (err, clip: cc.AudioClip) => {
-                if (!err) this.audioClips[key] = clip;
+                if (!err) {
+                    this.audioClips[key] = clip;
+                    this.tryPlayPendingMusic();
+                }
             });
         });
     }
 
     private playMusic(key: string) {
         const clip = this.audioClips[key];
-        if (clip) cc.audioEngine.playMusic(clip, true);
+        if (clip) {
+            this.pendingMusicKey = "";
+            cc.audioEngine.playMusic(clip, true);
+            return;
+        }
+        this.pendingMusicKey = key;
     }
 
     private playEffect(key: string) {
         const clip = this.audioClips[key];
         if (clip) cc.audioEngine.playEffect(clip, false);
+    }
+
+    private tryPlayPendingMusic() {
+        if (this.state !== "playing" || !this.pendingMusicKey) return;
+        const clip = this.audioClips[this.pendingMusicKey];
+        if (!clip) return;
+        const key = this.pendingMusicKey;
+        this.pendingMusicKey = "";
+        this.playMusic(key);
     }
 
     private loadVisuals() {
