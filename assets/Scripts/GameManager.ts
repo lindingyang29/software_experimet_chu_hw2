@@ -3,7 +3,8 @@ const { ccclass } = cc._decorator;
 type RectKind = "ground" | "brick" | "question" | "pipe" | "step";
 type BlockPayload = "coin" | "mushroom" | "";
 type GameState = "menu" | "select" | "auth" | "scores" | "playing" | "paused" | "clear" | "gameover" | "win";
-type ScoreScope = "all" | "world1" | "world2";
+type ScoreScope = "world1" | "world2";
+type ScoreUploadScope = "all" | ScoreScope;
 
 interface RectData {
     x: number;
@@ -157,7 +158,9 @@ export class GameManager extends cc.Component {
     private currentUser: any = null;
     private firebaseAuth: any = null;
     private firestore: any = null;
-    private authInputs: { email?: cc.EditBox; password?: cc.EditBox; name?: cc.EditBox } = {};
+    private authInputs: { email?: any; password?: any; name?: any } = {};
+    private authDomInputs: any[] = [];
+    private authDomResizeHandler: any = null;
     private authDraft = { email: "", password: "", name: "" };
     private authMessage = "";
     private topScores: ScoreEntry[] = [];
@@ -165,7 +168,7 @@ export class GameManager extends cc.Component {
     private bestUploadedScore = 0;
     private bestUploadedScores: { [key: string]: number } = { all: 0, world1: 0, world2: 0 };
     private scoreboardBackState: GameState = "menu";
-    private scoreboardScope: ScoreScope = "all";
+    private scoreboardScope: ScoreScope = "world1";
 
     onLoad() {
         cc.macro.ENABLE_MULTI_TOUCH = false;
@@ -186,6 +189,7 @@ export class GameManager extends cc.Component {
     }
 
     onDestroy() {
+        this.hideAuthDomInputs();
         cc.systemEvent.off(cc.SystemEvent.EventType.KEY_DOWN, this.onKeyDown, this);
         cc.systemEvent.off(cc.SystemEvent.EventType.KEY_UP, this.onKeyUp, this);
     }
@@ -279,6 +283,7 @@ export class GameManager extends cc.Component {
     }
 
     private showOverlay(next: GameState) {
+        this.hideAuthDomInputs();
         this.state = next;
         cc.audioEngine.stopMusic();
         this.overlay.removeAllChildren();
@@ -320,7 +325,7 @@ export class GameManager extends cc.Component {
 
         this.makeButton(copy[2], -120, -35, () => this.primaryAction());
         this.makeButton(copy[3], 120, -35, () => this.secondaryAction());
-        if (next === "paused") this.makeButton("SCOREBOARD", 0, -105, () => this.openScoreboard("paused"), 220);
+        this.makeCommonOverlayButtons(next, -105);
     }
 
     private showMenuOverlay() {
@@ -396,9 +401,8 @@ export class GameManager extends cc.Component {
         const scope = this.label(`Showing ${this.scoreboardTitle(this.scoreboardScope)}`, 0, 92, 18, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
         scope.node.width = 820;
         this.overlay.addChild(scope.node);
-        this.makeButton("ALL", -150, 62, () => this.setScoreboardScope("all"), 110);
-        this.makeButton("1-1", 0, 62, () => this.setScoreboardScope("world1"), 110);
-        this.makeButton("1-2", 150, 62, () => this.setScoreboardScope("world2"), 110);
+        this.makeButton("1-1", -70, 62, () => this.setScoreboardScope("world1"), 110);
+        this.makeButton("1-2", 70, 62, () => this.setScoreboardScope("world2"), 110);
 
         if (this.topScores.length === 0) {
             const empty = this.label(this.scoreboardMessage, 0, 0, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
@@ -460,6 +464,11 @@ export class GameManager extends cc.Component {
         this.overlay.addChild(node);
     }
 
+    private makeCommonOverlayButtons(backState: GameState, y: number) {
+        this.makeButton("ACCOUNT", -120, y, () => this.showOverlay("auth"), 220);
+        this.makeButton("SCOREBOARD", 120, y, () => this.openScoreboard(backState), 220);
+    }
+
     private makeFormLabel(text: string, y: number) {
         const formLabel = this.label(text, 0, y, 18, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.LEFT);
         formLabel.node.width = 430;
@@ -469,34 +478,83 @@ export class GameManager extends cc.Component {
     private makeInput(placeholder: string, field: "email" | "password" | "name", x: number, y: number, w: number, h: number, password: boolean, value = "", email = false) {
         const node = this.rectNode(`Input ${placeholder}`, 0, 0, w, h, new cc.Color(245, 248, 255, 235));
         node.setPosition(x - w / 2, y - h / 2);
-        const edit = node.addComponent(cc.EditBox);
-        edit.string = value;
-        edit.placeholder = placeholder;
-        edit.fontSize = 20;
-        edit.placeholderFontSize = 18;
-        edit.fontColor = cc.Color.BLACK;
-        edit.placeholderFontColor = new cc.Color(92, 105, 125);
-        edit.lineHeight = h;
-        edit.maxLength = password ? 64 : 32;
-        edit.inputFlag = cc.EditBox.InputFlag.DEFAULT;
-        edit.inputMode = email ? cc.EditBox.InputMode.EMAIL_ADDR : cc.EditBox.InputMode.SINGLE_LINE;
-        edit.returnType = cc.EditBox.KeyboardReturnType.DONE;
-        edit.stayOnTop = false;
-        node.on("text-changed", () => this.captureAuthInput(field, edit), this);
-        node.on("editing-did-ended", () => this.captureAuthInput(field, edit), this);
-        node.on("editing-return", () => this.captureAuthInput(field, edit), this);
         this.overlay.addChild(node);
-        this.scheduleOnce(() => {
-            if (edit.textLabel) edit.textLabel.node.color = cc.Color.BLACK;
-            if (edit.placeholderLabel) edit.placeholderLabel.node.color = new cc.Color(92, 105, 125);
-        }, 0);
-        return edit;
+
+        if (!cc.sys.isBrowser || typeof document === "undefined") {
+            const fallback = this.label(value || placeholder, x, y - 11, 18, value ? cc.Color.BLACK : new cc.Color(92, 105, 125), cc.Label.HorizontalAlign.LEFT);
+            fallback.node.width = w - 24;
+            this.overlay.addChild(fallback.node);
+            return { value, string: value };
+        }
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = value;
+        input.placeholder = placeholder;
+        input.maxLength = password ? 64 : 32;
+        input.autocomplete = email ? "email" : field === "password" ? "current-password" : "nickname";
+        input.style.position = "fixed";
+        input.style.zIndex = "2147483647";
+        input.style.boxSizing = "border-box";
+        input.style.border = "0";
+        input.style.outline = "0";
+        input.style.background = "#f5f8ff";
+        input.style.color = "#000000";
+        (input.style as any).webkitTextFillColor = "#000000";
+        input.style.padding = "0 12px";
+        input.style.fontFamily = "Arial, sans-serif";
+        input.style.pointerEvents = "auto";
+        input.addEventListener("input", () => this.captureAuthInput(field, input));
+        input.addEventListener("change", () => this.captureAuthInput(field, input));
+        input.addEventListener("blur", () => this.captureAuthInput(field, input));
+        document.body.appendChild(input);
+        this.authDomInputs.push({ input, x, y, w, h });
+        this.ensureAuthDomResizeHandler();
+        this.positionAuthDomInputs();
+        return input;
     }
 
-    private captureAuthInput(field: "email" | "password" | "name", input: cc.EditBox) {
+    private captureAuthInput(field: "email" | "password" | "name", input: any) {
         this.authDraft[field] = this.inputValue(input);
         if (field === "email") cc.sys.localStorage.setItem("webMarioEmail", this.authDraft.email);
         if (field === "name") cc.sys.localStorage.setItem("webMarioDisplayName", this.authDraft.name);
+    }
+
+    private ensureAuthDomResizeHandler() {
+        if (this.authDomResizeHandler || typeof window === "undefined") return;
+        this.authDomResizeHandler = () => this.positionAuthDomInputs();
+        window.addEventListener("resize", this.authDomResizeHandler);
+    }
+
+    private positionAuthDomInputs() {
+        if (!cc.sys.isBrowser || typeof document === "undefined") return;
+        const canvasElement = ((cc.game as any) && (cc.game as any).canvas) || document.querySelector("canvas");
+        if (!canvasElement || !canvasElement.getBoundingClientRect) return;
+        const rect = canvasElement.getBoundingClientRect();
+        const scaleX = rect.width / VIEW_W;
+        const scaleY = rect.height / VIEW_H;
+        this.authDomInputs.forEach((entry) => {
+            const left = rect.left + (VIEW_W / 2 + entry.x - entry.w / 2) * scaleX;
+            const top = rect.top + (VIEW_H / 2 - entry.y - entry.h / 2) * scaleY;
+            entry.input.style.left = `${left}px`;
+            entry.input.style.top = `${top}px`;
+            entry.input.style.width = `${entry.w * scaleX}px`;
+            entry.input.style.height = `${entry.h * scaleY}px`;
+            entry.input.style.fontSize = `${Math.max(14, 20 * Math.min(scaleX, scaleY))}px`;
+            entry.input.style.lineHeight = `${entry.h * scaleY}px`;
+        });
+    }
+
+    private hideAuthDomInputs() {
+        this.captureAuthInputs();
+        this.authDomInputs.forEach((entry) => {
+            if (entry.input && entry.input.parentNode) entry.input.parentNode.removeChild(entry.input);
+        });
+        this.authDomInputs = [];
+        if (this.authDomResizeHandler && typeof window !== "undefined") {
+            window.removeEventListener("resize", this.authDomResizeHandler);
+            this.authDomResizeHandler = null;
+        }
     }
 
     private startLevel(index: number) {
@@ -756,7 +814,7 @@ export class GameManager extends cc.Component {
         if (!this.firestore || !this.currentUser) return;
         const firebase = (window as any).firebase;
         const uploadScore = this.score;
-        const scopes = ["all", this.scoreScopeForLevel()] as ScoreScope[];
+        const scopes = ["all", this.scoreScopeForLevel()] as ScoreUploadScope[];
         scopes.forEach((scope) => {
             if (uploadScore <= (this.bestUploadedScores[scope] || 0)) return;
             this.bestUploadedScores[scope] = uploadScore;
@@ -795,8 +853,10 @@ export class GameManager extends cc.Component {
         if (this.state === "menu" || this.state === "auth" || this.state === "scores") this.showOverlay(this.state);
     }
 
-    private inputValue(input?: cc.EditBox) {
-        return input ? String(input.string || "").trim() : "";
+    private inputValue(input?: any) {
+        if (!input) return "";
+        if (typeof (input as any).value === "string") return String((input as any).value || "").trim();
+        return String((input as any).string || "").trim();
     }
 
     private captureAuthInputs() {
@@ -805,11 +865,11 @@ export class GameManager extends cc.Component {
         if (this.authInputs.name) this.captureAuthInput("name", this.authInputs.name);
     }
 
-    private scoreScopes(): ScoreScope[] {
+    private scoreScopes(): ScoreUploadScope[] {
         return ["all", "world1", "world2"];
     }
 
-    private scopeCollection(scope: ScoreScope) {
+    private scopeCollection(scope: ScoreUploadScope) {
         if (scope === "world1") return "scores_world_1_1";
         if (scope === "world2") return "scores_world_1_2";
         return "scores";
@@ -817,8 +877,7 @@ export class GameManager extends cc.Component {
 
     private scoreboardTitle(scope: ScoreScope) {
         if (scope === "world1") return "World 1-1";
-        if (scope === "world2") return "World 1-2";
-        return "All Worlds";
+        return "World 1-2";
     }
 
     private scoreScopeForLevel(): ScoreScope {
