@@ -2,7 +2,7 @@ const { ccclass } = cc._decorator;
 
 type RectKind = "ground" | "brick" | "question" | "pipe" | "step";
 type BlockPayload = "coin" | "mushroom" | "";
-type GameState = "menu" | "select" | "playing" | "paused" | "clear" | "gameover" | "win";
+type GameState = "menu" | "select" | "auth" | "scores" | "playing" | "paused" | "clear" | "gameover" | "win";
 
 interface RectData {
     x: number;
@@ -82,6 +82,14 @@ interface EffectData {
     rise: number;
 }
 
+interface ScoreEntry {
+    uid: string;
+    name: string;
+    score: number;
+    coins: number;
+    world: string;
+}
+
 const VIEW_W = 960;
 const VIEW_H = 640;
 const WORLD_Y = -320;
@@ -101,6 +109,20 @@ const BIG_W = 48;
 const BIG_H = 72;
 const SMALL_CROUCH_H = 34;
 const BIG_CROUCH_H = 44;
+const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDvjVrLkf7x-8jbe0iJYrdkDhD3TEsx8-o",
+    authDomain: "softwaremario.firebaseapp.com",
+    projectId: "softwaremario",
+    storageBucket: "softwaremario.firebasestorage.app",
+    messagingSenderId: "282301204175",
+    appId: "1:282301204175:web:c9d89d57a2064f297899ba",
+    measurementId: "G-74MNLBH27J"
+};
+const FIREBASE_SCRIPTS = [
+    "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js",
+    "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js",
+    "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"
+];
 
 @ccclass
 export class GameManager extends cc.Component {
@@ -129,6 +151,16 @@ export class GameManager extends cc.Component {
     private frames: { [key: string]: cc.SpriteFrame } = {};
     private jumpQueued = false;
     private fastFallQueued = false;
+    private firebaseReady = false;
+    private firebaseMessage = "Connecting to Firebase...";
+    private currentUser: any = null;
+    private firebaseAuth: any = null;
+    private firestore: any = null;
+    private authInputs: { email?: cc.EditBox; password?: cc.EditBox; name?: cc.EditBox } = {};
+    private authMessage = "";
+    private topScores: ScoreEntry[] = [];
+    private scoreboardMessage = "Loading scoreboard...";
+    private bestUploadedScore = 0;
 
     onLoad() {
         cc.macro.ENABLE_MULTI_TOUCH = false;
@@ -138,6 +170,7 @@ export class GameManager extends cc.Component {
         this.prepareLevels();
         this.loadVisuals();
         this.loadAudio();
+        this.initFirebase();
     }
 
     start() {
@@ -248,8 +281,21 @@ export class GameManager extends cc.Component {
         shade.setPosition(-VIEW_W / 2, -VIEW_H / 2);
         this.overlay.addChild(shade);
 
+        if (next === "menu") {
+            this.showMenuOverlay();
+            return;
+        }
+        if (next === "auth") {
+            this.showAuthOverlay();
+            return;
+        }
+        if (next === "scores") {
+            this.showScoreboardOverlay();
+            return;
+        }
+        if (next === "clear" || next === "gameover" || next === "win") this.submitScoreIfEligible();
+
         const copy = {
-            menu: ["Web Mario", `Cocos Creator edition. Best score: ${this.highScore}`, "START", "LEVEL SELECT"],
             select: ["Level Select", "Choose a world.", "WORLD 1-1", "WORLD 1-2"],
             paused: ["Paused", "Timer stopped. Ready when you are.", "RESUME", "RESTART"],
             clear: ["Level Clear", "Nice run. Continue to the next stage.", "NEXT", "LEVEL SELECT"],
@@ -269,6 +315,94 @@ export class GameManager extends cc.Component {
         this.makeButton(copy[3], 120, -35, () => this.secondaryAction());
     }
 
+    private showMenuOverlay() {
+        const title = this.label("Web Mario", 0, 142, 66, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
+        title.node.width = 760;
+        this.overlay.addChild(title.node);
+
+        const body = this.label(`Cocos Creator edition. Best score: ${this.highScore}`, 0, 82, 24, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+        body.node.width = 780;
+        this.overlay.addChild(body.node);
+
+        const account = this.label(this.accountSummary(), 0, 38, 20, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+        account.node.width = 820;
+        this.overlay.addChild(account.node);
+
+        this.makeButton("START", -120, -38, () => this.primaryAction());
+        this.makeButton("LEVEL SELECT", 120, -38, () => this.secondaryAction());
+        this.makeButton(this.currentUser ? "ACCOUNT" : "REGISTER / LOGIN", -120, -108, () => this.showOverlay("auth"), 220);
+        this.makeButton("SCOREBOARD", 120, -108, () => {
+            this.scoreboardMessage = "Loading scoreboard...";
+            this.showOverlay("scores");
+            this.loadScoreboard();
+        }, 220);
+    }
+
+    private showAuthOverlay() {
+        const title = this.label("Account", 0, 168, 58, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
+        title.node.width = 760;
+        this.overlay.addChild(title.node);
+
+        const body = this.label(this.authMessage || this.accountSummary(), 0, 112, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+        body.node.width = 820;
+        this.overlay.addChild(body.node);
+
+        if (!this.firebaseReady) {
+            const pending = this.label(this.firebaseMessage, 0, 38, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+            pending.node.width = 820;
+            this.overlay.addChild(pending.node);
+            this.makeButton("BACK", 0, -74, () => this.showOverlay("menu"), 180);
+            return;
+        }
+
+        if (this.currentUser) {
+            const signedIn = this.label(`Signed in as ${this.displayName()} (${this.currentUser.email || "Firebase user"})`, 0, 42, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+            signedIn.node.width = 820;
+            this.overlay.addChild(signedIn.node);
+            this.makeButton("LOG OUT", -170, -54, () => this.logoutAccount(), 180);
+            this.makeButton("SCOREBOARD", 0, -54, () => {
+                this.showOverlay("scores");
+                this.loadScoreboard();
+            }, 190);
+            this.makeButton("BACK", 170, -54, () => this.showOverlay("menu"), 180);
+            return;
+        }
+
+        this.authInputs.email = this.makeInput("Email", 0, 48, 430, 46, false, cc.sys.localStorage.getItem("webMarioEmail") || "", true);
+        this.authInputs.password = this.makeInput("Password", 0, -8, 430, 46, true, "");
+        this.authInputs.name = this.makeInput("Display name", 0, -64, 430, 46, false, cc.sys.localStorage.getItem("webMarioDisplayName") || "");
+        this.makeButton("REGISTER", -170, -142, () => this.registerAccount(), 180);
+        this.makeButton("LOG IN", 0, -142, () => this.loginAccount(), 160);
+        this.makeButton("BACK", 170, -142, () => this.showOverlay("menu"), 180);
+    }
+
+    private showScoreboardOverlay() {
+        const title = this.label("Scoreboard", 0, 178, 58, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
+        title.node.width = 760;
+        this.overlay.addChild(title.node);
+
+        const status = this.label(this.currentUser ? `Signed in: ${this.displayName()}` : "Register or log in to upload your score.", 0, 126, 20, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+        status.node.width = 820;
+        this.overlay.addChild(status.node);
+
+        if (this.topScores.length === 0) {
+            const empty = this.label(this.scoreboardMessage, 0, 44, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+            empty.node.width = 820;
+            this.overlay.addChild(empty.node);
+        } else {
+            this.topScores.forEach((entry, index) => {
+                const line = `${index + 1}. ${entry.name}   ${entry.score} pts   ${entry.coins} coins   ${entry.world}`;
+                const row = this.label(line, 0, 82 - index * 30, 20, index === 0 ? new cc.Color(255, 231, 112) : cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+                row.node.width = 860;
+                this.overlay.addChild(row.node);
+            });
+        }
+
+        this.makeButton("REFRESH", -180, -250, () => this.loadScoreboard(), 180);
+        this.makeButton("ACCOUNT", 0, -250, () => this.showOverlay("auth"), 180);
+        this.makeButton("BACK", 180, -250, () => this.showOverlay("menu"), 180);
+    }
+
     private primaryAction() {
         if (this.state === "select") this.startLevel(0);
         else if (this.state === "clear") this.startLevel(this.levelIndex + 1);
@@ -282,19 +416,35 @@ export class GameManager extends cc.Component {
         else this.showOverlay("select");
     }
 
-    private makeButton(text: string, x: number, y: number, cb: Function) {
-        const node = this.rectNode(`Button ${text}`, 0, 0, 196, 54, new cc.Color(246, 170, 55));
-        node.setPosition(x - 98, y - 27);
+    private makeButton(text: string, x: number, y: number, cb: Function, width = 196) {
+        const node = this.rectNode(`Button ${text}`, 0, 0, width, 54, new cc.Color(246, 170, 55));
+        node.setPosition(x - width / 2, y - 27);
         const button = node.addComponent(cc.Button);
         button.transition = cc.Button.Transition.COLOR;
         button.normalColor = new cc.Color(246, 170, 55);
         button.hoverColor = new cc.Color(255, 203, 91);
         button.pressedColor = new cc.Color(204, 102, 34);
         node.on(cc.Node.EventType.TOUCH_END, cb, this);
-        const label = this.label(text, 98, 15, 22, new cc.Color(42, 20, 4), cc.Label.HorizontalAlign.CENTER);
-        label.node.width = 180;
+        const label = this.label(text, width / 2, 15, 22, new cc.Color(42, 20, 4), cc.Label.HorizontalAlign.CENTER);
+        label.node.width = width - 16;
         node.addChild(label.node);
         this.overlay.addChild(node);
+    }
+
+    private makeInput(placeholder: string, x: number, y: number, w: number, h: number, password: boolean, value = "", email = false) {
+        const node = this.rectNode(`Input ${placeholder}`, 0, 0, w, h, new cc.Color(245, 248, 255, 235));
+        node.setPosition(x - w / 2, y - h / 2);
+        const edit = node.addComponent(cc.EditBox);
+        edit.string = value;
+        edit.placeholder = placeholder;
+        edit.fontSize = 20;
+        edit.lineHeight = h;
+        edit.maxLength = password ? 64 : 32;
+        edit.inputFlag = password ? cc.EditBox.InputFlag.PASSWORD : cc.EditBox.InputFlag.DEFAULT;
+        edit.inputMode = email ? cc.EditBox.InputMode.EMAIL_ADDR : cc.EditBox.InputMode.ANY;
+        edit.returnType = cc.EditBox.KeyboardReturnType.DONE;
+        this.overlay.addChild(node);
+        return edit;
     }
 
     private startLevel(index: number) {
@@ -323,6 +473,280 @@ export class GameManager extends cc.Component {
         this.overlay.active = false;
         this.state = "playing";
         this.playMusic(this.levels[this.levelIndex].music);
+    }
+
+    private initFirebase() {
+        if (!cc.sys.isBrowser || typeof window === "undefined" || typeof document === "undefined") {
+            this.firebaseMessage = "Firebase account features are available in the Web build.";
+            return;
+        }
+
+        this.loadFirebaseScripts()
+            .then(() => {
+                const firebase = (window as any).firebase;
+                if (!firebase) throw new Error("Firebase SDK did not load.");
+                if (!firebase.apps || firebase.apps.length === 0) firebase.initializeApp(FIREBASE_CONFIG);
+                this.firebaseAuth = firebase.auth();
+                this.firestore = firebase.firestore();
+                this.firebaseReady = true;
+                this.firebaseMessage = "Firebase connected.";
+                this.firebaseAuth.onAuthStateChanged((user: any) => this.onAuthChanged(user));
+                this.loadScoreboard();
+                this.refreshCurrentOverlay();
+            })
+            .catch((err: any) => {
+                this.firebaseReady = false;
+                this.firebaseMessage = this.firebaseErrorText(err);
+                this.refreshCurrentOverlay();
+            });
+    }
+
+    private loadFirebaseScripts(): Promise<void> {
+        let chain = Promise.resolve();
+        FIREBASE_SCRIPTS.forEach((src) => {
+            chain = chain.then(() => this.loadScript(src));
+        });
+        return chain;
+    }
+
+    private loadScript(src: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const scripts = document.getElementsByTagName("script");
+            for (let i = 0; i < scripts.length; i++) {
+                if (scripts[i].src === src) {
+                    resolve();
+                    return;
+                }
+            }
+            const script = document.createElement("script");
+            script.src = src;
+            script.async = true;
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error(`Failed to load ${src}`));
+            document.head.appendChild(script);
+        });
+    }
+
+    private onAuthChanged(user: any) {
+        this.currentUser = user;
+        if (!user) {
+            this.bestUploadedScore = 0;
+            this.authMessage = "Not signed in.";
+            this.refreshCurrentOverlay();
+            return;
+        }
+
+        if (user.email) cc.sys.localStorage.setItem("webMarioEmail", user.email);
+        this.authMessage = `Signed in as ${this.displayName()}.`;
+        this.loadUserCloudScore();
+        this.loadScoreboard();
+        this.refreshCurrentOverlay();
+    }
+
+    private registerAccount() {
+        if (!this.requireFirebase()) return;
+        const email = this.inputValue(this.authInputs.email);
+        const password = this.inputValue(this.authInputs.password);
+        const name = this.cleanName(this.inputValue(this.authInputs.name));
+        if (!email || !password || !name) {
+            this.authMessage = "Email, password, and display name are required.";
+            this.showOverlay("auth");
+            return;
+        }
+        if (password.length < 6) {
+            this.authMessage = "Password must be at least 6 characters.";
+            this.showOverlay("auth");
+            return;
+        }
+
+        this.authMessage = "Registering account...";
+        this.showOverlay("auth");
+        this.firebaseAuth.createUserWithEmailAndPassword(email, password)
+            .then((credential: any) => this.saveProfileName(credential.user, name))
+            .then(() => {
+                cc.sys.localStorage.setItem("webMarioDisplayName", name);
+                this.authMessage = "Account created. Your scores will upload automatically.";
+                this.showOverlay("auth");
+            })
+            .catch((err: any) => {
+                this.authMessage = this.firebaseErrorText(err);
+                this.showOverlay("auth");
+            });
+    }
+
+    private loginAccount() {
+        if (!this.requireFirebase()) return;
+        const email = this.inputValue(this.authInputs.email);
+        const password = this.inputValue(this.authInputs.password);
+        const name = this.cleanName(this.inputValue(this.authInputs.name));
+        if (!email || !password) {
+            this.authMessage = "Email and password are required.";
+            this.showOverlay("auth");
+            return;
+        }
+
+        this.authMessage = "Signing in...";
+        this.showOverlay("auth");
+        this.firebaseAuth.signInWithEmailAndPassword(email, password)
+            .then((credential: any) => name ? this.saveProfileName(credential.user, name) : null)
+            .then(() => {
+                if (name) cc.sys.localStorage.setItem("webMarioDisplayName", name);
+                this.authMessage = "Signed in. Your score can now be uploaded.";
+                this.showOverlay("auth");
+            })
+            .catch((err: any) => {
+                this.authMessage = this.firebaseErrorText(err);
+                this.showOverlay("auth");
+            });
+    }
+
+    private logoutAccount() {
+        if (!this.requireFirebase()) return;
+        this.firebaseAuth.signOut()
+            .then(() => {
+                this.authMessage = "Signed out.";
+                this.showOverlay("auth");
+            })
+            .catch((err: any) => {
+                this.authMessage = this.firebaseErrorText(err);
+                this.showOverlay("auth");
+            });
+    }
+
+    private saveProfileName(user: any, name: string): Promise<void> {
+        if (!user || !name) return Promise.resolve();
+        const firebase = (window as any).firebase;
+        const profileScore = Math.max(0, this.bestUploadedScore, this.score);
+        this.bestUploadedScore = profileScore;
+        return user.updateProfile({ displayName: name })
+            .then(() => {
+                const ref = this.firestore.collection("scores").doc(user.uid);
+                return ref.get().then((doc: any) => {
+                    if (doc.exists) {
+                        return ref.set({
+                            uid: user.uid,
+                            name,
+                            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        }, { merge: true });
+                    }
+                    return ref.set({
+                        uid: user.uid,
+                        name,
+                        score: profileScore,
+                        coins: profileScore === this.score ? this.coinCount : 0,
+                        world: profileScore === this.score && this.levels[this.levelIndex] ? this.levels[this.levelIndex].name : "-",
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                });
+            });
+    }
+
+    private loadUserCloudScore() {
+        if (!this.firestore || !this.currentUser) return;
+        this.firestore.collection("scores").doc(this.currentUser.uid).get()
+            .then((doc: any) => {
+                const data = doc.exists ? doc.data() : null;
+                this.bestUploadedScore = data && typeof data.score === "number" ? data.score : 0;
+                this.submitScoreIfEligible();
+            })
+            .catch((err: any) => {
+                this.firebaseMessage = this.firebaseErrorText(err);
+            });
+    }
+
+    private loadScoreboard() {
+        if (!this.firestore) {
+            this.scoreboardMessage = this.firebaseMessage;
+            this.refreshCurrentOverlay();
+            return;
+        }
+
+        this.scoreboardMessage = "Loading scoreboard...";
+        this.firestore.collection("scores").orderBy("score", "desc").limit(10).get()
+            .then((snapshot: any) => {
+                this.topScores = [];
+                snapshot.forEach((doc: any) => {
+                    const data = doc.data();
+                    this.topScores.push({
+                        uid: data.uid || doc.id,
+                        name: this.cleanName(data.name || "Player"),
+                        score: Number(data.score || 0),
+                        coins: Number(data.coins || 0),
+                        world: data.world || "-"
+                    });
+                });
+                this.scoreboardMessage = this.topScores.length ? "" : "No scores yet. Finish a run after signing in.";
+                this.refreshCurrentOverlay();
+            })
+            .catch((err: any) => {
+                this.topScores = [];
+                this.scoreboardMessage = this.firebaseErrorText(err);
+                this.refreshCurrentOverlay();
+            });
+    }
+
+    private submitScoreIfEligible() {
+        if (!this.firestore || !this.currentUser || this.score <= this.bestUploadedScore) return;
+        const firebase = (window as any).firebase;
+        const uploadScore = this.score;
+        const entry = {
+            uid: this.currentUser.uid,
+            name: this.displayName(),
+            score: uploadScore,
+            coins: this.coinCount,
+            world: this.levels[this.levelIndex] ? this.levels[this.levelIndex].name : "-",
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        this.bestUploadedScore = uploadScore;
+        this.firestore.collection("scores").doc(this.currentUser.uid).set(entry, { merge: true })
+            .then(() => {
+                this.scoreboardMessage = "Score uploaded.";
+                this.loadScoreboard();
+            })
+            .catch((err: any) => {
+                this.firebaseMessage = this.firebaseErrorText(err);
+            });
+    }
+
+    private requireFirebase() {
+        if (this.firebaseReady) return true;
+        this.authMessage = this.firebaseMessage;
+        this.showOverlay("auth");
+        return false;
+    }
+
+    private refreshCurrentOverlay() {
+        if (!this.overlay || !this.overlay.active) return;
+        if (this.state === "menu" || this.state === "auth" || this.state === "scores") this.showOverlay(this.state);
+    }
+
+    private inputValue(input?: cc.EditBox) {
+        return input ? String(input.string || "").trim() : "";
+    }
+
+    private cleanName(name: string) {
+        return (name || "Player").replace(/[<>]/g, "").trim().slice(0, 20) || "Player";
+    }
+
+    private displayName() {
+        if (this.currentUser && this.currentUser.displayName) return this.cleanName(this.currentUser.displayName);
+        if (this.currentUser && this.currentUser.email) return this.cleanName(String(this.currentUser.email).split("@")[0]);
+        return this.cleanName(cc.sys.localStorage.getItem("webMarioDisplayName") || "Player");
+    }
+
+    private accountSummary() {
+        if (this.currentUser) return `Signed in: ${this.displayName()}. Cloud best: ${this.bestUploadedScore}`;
+        return this.firebaseReady ? "Not signed in. Register to upload scores." : this.firebaseMessage;
+    }
+
+    private firebaseErrorText(err: any) {
+        const code = err && err.code ? err.code : "";
+        const message = err && err.message ? err.message : String(err || "Firebase error");
+        if (code === "auth/operation-not-allowed") return "Enable Email/Password sign-in in Firebase Authentication.";
+        if (code === "permission-denied" || code === "firestore/permission-denied") return "Firestore permission denied. Deploy firestore.rules.";
+        if (message.indexOf("PERMISSION_DENIED") >= 0) return "Firestore permission denied. Deploy firestore.rules.";
+        if (message.indexOf("not been used") >= 0 || message.indexOf("not enabled") >= 0) return "Enable Cloud Firestore in Firebase Console.";
+        return message.replace(/^Firebase:\s*/, "").slice(0, 140);
     }
 
     private buildLevel(level: LevelData) {

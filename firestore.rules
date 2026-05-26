@@ -1,0 +1,41 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsScore(uid) {
+      return signedIn() && request.auth.uid == uid && request.resource.data.uid == uid;
+    }
+
+    function validScore() {
+      return request.resource.data.keys().hasOnly([
+        'uid',
+        'name',
+        'score',
+        'coins',
+        'world',
+        'updatedAt'
+      ])
+      && request.resource.data.name is string
+      && request.resource.data.name.size() > 0
+      && request.resource.data.name.size() <= 20
+      && request.resource.data.score is int
+      && request.resource.data.score >= 0
+      && request.resource.data.coins is int
+      && request.resource.data.coins >= 0
+      && request.resource.data.world is string
+      && request.resource.data.world.size() <= 20;
+    }
+
+    match /scores/{uid} {
+      allow read: if true;
+      allow create: if ownsScore(uid) && validScore();
+      allow update: if ownsScore(uid) && validScore()
+        && request.resource.data.score >= resource.data.score;
+      allow delete: if false;
+    }
+  }
+}
