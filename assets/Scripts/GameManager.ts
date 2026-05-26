@@ -390,36 +390,36 @@ export class GameManager extends cc.Component {
     }
 
     private showScoreboardOverlay() {
-        const title = this.label("Scoreboard", 0, 178, 58, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
+        const title = this.label("Scoreboard", 0, 188, 54, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
         title.node.width = 760;
         this.overlay.addChild(title.node);
 
-        const status = this.label(this.currentUser ? `Signed in: ${this.displayName()}` : "Register or log in to upload your score.", 0, 126, 20, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+        const status = this.label(this.currentUser ? `Signed in: ${this.displayName()}` : "Register or log in to upload your score.", 0, 134, 20, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
         status.node.width = 820;
         this.overlay.addChild(status.node);
 
-        const scope = this.label(`Showing ${this.scoreboardTitle(this.scoreboardScope)}`, 0, 92, 18, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+        const scope = this.label(`Showing ${this.scoreboardTitle(this.scoreboardScope)}`, 0, 102, 18, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
         scope.node.width = 820;
         this.overlay.addChild(scope.node);
-        this.makeButton("1-1", -70, 62, () => this.setScoreboardScope("world1"), 110);
-        this.makeButton("1-2", 70, 62, () => this.setScoreboardScope("world2"), 110);
+        this.makeButton("1-1", -70, 54, () => this.setScoreboardScope("world1"), 110);
+        this.makeButton("1-2", 70, 54, () => this.setScoreboardScope("world2"), 110);
 
         if (this.topScores.length === 0) {
-            const empty = this.label(this.scoreboardMessage, 0, 0, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+            const empty = this.label(this.scoreboardMessage, 0, -20, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
             empty.node.width = 820;
             this.overlay.addChild(empty.node);
         } else {
             this.topScores.forEach((entry, index) => {
                 const line = `${index + 1}. ${entry.name}   ${entry.score} pts   ${entry.coins} coins   ${entry.world}`;
-                const row = this.label(line, 0, 28 - index * 25, 18, index === 0 ? new cc.Color(255, 231, 112) : cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+                const row = this.label(line, 0, -8 - index * 22, 18, index === 0 ? new cc.Color(255, 231, 112) : cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
                 row.node.width = 860;
                 this.overlay.addChild(row.node);
             });
         }
 
-        this.makeButton("REFRESH", -180, -250, () => this.loadScoreboard(), 180);
-        this.makeButton("ACCOUNT", 0, -250, () => this.showOverlay("auth"), 180);
-        this.makeButton("BACK", 180, -250, () => this.showOverlay(this.scoreboardBackState), 180);
+        this.makeButton("REFRESH", -220, -260, () => this.loadScoreboard(), 180);
+        this.makeButton("ACCOUNT", 0, -260, () => this.showOverlay("auth"), 180);
+        this.makeButton("BACK", 220, -260, () => this.showOverlay(this.scoreboardBackState), 180);
     }
 
     private openScoreboard(backState: GameState) {
