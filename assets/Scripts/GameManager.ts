@@ -261,19 +261,19 @@ export class GameManager extends cc.Component {
         bg.setPosition(-VIEW_W * 1.5, VIEW_H / 2 - 58);
         this.ui.addChild(bg);
 
-        this.hudLabels.world = this.label("World", -448, 260, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
-        this.hudLabels.score = this.label("Score", -250, 260, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
-        this.hudLabels.coins = this.label("Coins", -30, 260, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
-        this.hudLabels.lives = this.label("Lives", 150, 260, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
-        this.hudLabels.time = this.label("Time", 300, 260, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
-        this.hudLabels.best = this.label("Best", 420, 260, 18, new cc.Color(255, 224, 112), cc.Label.HorizontalAlign.LEFT);
+        this.hudLabels.world = this.label("World", -448, 276, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
+        this.hudLabels.score = this.label("Score", -250, 276, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
+        this.hudLabels.coins = this.label("Coins", -30, 276, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
+        this.hudLabels.lives = this.label("Lives", 150, 276, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
+        this.hudLabels.time = this.label("Time", 300, 276, 22, cc.Color.WHITE, cc.Label.HorizontalAlign.LEFT);
+        this.hudLabels.best = this.label("Best", 420, 276, 18, new cc.Color(255, 224, 112), cc.Label.HorizontalAlign.LEFT);
         Object.keys(this.hudLabels).forEach((k) => this.ui.addChild(this.hudLabels[k].node));
 
         const progressBack = this.rectNode("ProgressBack", 0, 0, 300, 8, new cc.Color(0, 0, 0, 130));
-        progressBack.setPosition(300, 232);
+        progressBack.setPosition(300, 266);
         this.ui.addChild(progressBack);
         this.progressFill = this.rectNode("ProgressFill", 0, 0, 1, 8, new cc.Color(255, 211, 76, 235));
-        this.progressFill.setPosition(300, 232);
+        this.progressFill.setPosition(300, 266);
         this.ui.addChild(this.progressFill);
     }
 
