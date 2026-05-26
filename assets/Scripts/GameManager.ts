@@ -368,12 +368,15 @@ export class GameManager extends cc.Component {
             return;
         }
 
-        this.authInputs.email = this.makeInput("Email", 0, 48, 430, 46, false, cc.sys.localStorage.getItem("webMarioEmail") || "", true);
-        this.authInputs.password = this.makeInput("Password", 0, -8, 430, 46, true, "");
-        this.authInputs.name = this.makeInput("Display name", 0, -64, 430, 46, false, cc.sys.localStorage.getItem("webMarioDisplayName") || "");
-        this.makeButton("REGISTER", -170, -142, () => this.registerAccount(), 180);
-        this.makeButton("LOG IN", 0, -142, () => this.loginAccount(), 160);
-        this.makeButton("BACK", 170, -142, () => this.showOverlay("menu"), 180);
+        this.makeFormLabel("Email address", 72);
+        this.authInputs.email = this.makeInput("you@example.com", 0, 42, 430, 46, false, cc.sys.localStorage.getItem("webMarioEmail") || "", true);
+        this.makeFormLabel("Password (at least 6 characters)", 6);
+        this.authInputs.password = this.makeInput("password", 0, -24, 430, 46, true, "");
+        this.makeFormLabel("Display name on scoreboard", -60);
+        this.authInputs.name = this.makeInput("player name", 0, -90, 430, 46, false, cc.sys.localStorage.getItem("webMarioDisplayName") || "");
+        this.makeButton("REGISTER", -170, -170, () => this.registerAccount(), 180);
+        this.makeButton("LOG IN", 0, -170, () => this.loginAccount(), 160);
+        this.makeButton("BACK", 170, -170, () => this.showOverlay("menu"), 180);
     }
 
     private showScoreboardOverlay() {
@@ -431,6 +434,12 @@ export class GameManager extends cc.Component {
         this.overlay.addChild(node);
     }
 
+    private makeFormLabel(text: string, y: number) {
+        const formLabel = this.label(text, 0, y, 18, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.LEFT);
+        formLabel.node.width = 430;
+        this.overlay.addChild(formLabel.node);
+    }
+
     private makeInput(placeholder: string, x: number, y: number, w: number, h: number, password: boolean, value = "", email = false) {
         const node = this.rectNode(`Input ${placeholder}`, 0, 0, w, h, new cc.Color(245, 248, 255, 235));
         node.setPosition(x - w / 2, y - h / 2);
@@ -438,6 +447,9 @@ export class GameManager extends cc.Component {
         edit.string = value;
         edit.placeholder = placeholder;
         edit.fontSize = 20;
+        edit.placeholderFontSize = 18;
+        edit.fontColor = new cc.Color(24, 34, 48);
+        edit.placeholderFontColor = new cc.Color(92, 105, 125);
         edit.lineHeight = h;
         edit.maxLength = password ? 64 : 32;
         edit.inputFlag = password ? cc.EditBox.InputFlag.PASSWORD : cc.EditBox.InputFlag.DEFAULT;
@@ -742,6 +754,7 @@ export class GameManager extends cc.Component {
     private firebaseErrorText(err: any) {
         const code = err && err.code ? err.code : "";
         const message = err && err.message ? err.message : String(err || "Firebase error");
+        if (code === "auth/configuration-not-found") return "Enable Firebase Auth Email/Password in Console first.";
         if (code === "auth/operation-not-allowed") return "Enable Email/Password sign-in in Firebase Authentication.";
         if (code === "permission-denied" || code === "firestore/permission-denied") return "Firestore permission denied. Deploy firestore.rules.";
         if (message.indexOf("PERMISSION_DENIED") >= 0) return "Firestore permission denied. Deploy firestore.rules.";
