@@ -6,6 +6,7 @@ type GameState = "menu" | "select" | "auth" | "scores" | "playing" | "paused" | 
 type ScoreScope = "world1" | "world2";
 type ScoreUploadScope = "all" | ScoreScope;
 type PlayerSlot = "p1" | "p2";
+type PlayerCount = 1 | 2;
 
 interface RectData {
     x: number;
@@ -46,6 +47,8 @@ interface ItemData {
     h: number;
     vx: number;
     vy: number;
+    emerging?: boolean;
+    emergeTop?: number;
     node?: cc.Node;
     taken?: boolean;
 }
@@ -146,6 +149,7 @@ export class GameManager extends cc.Component {
     private state: GameState = "menu";
     private player: PlayerData = null;
     private player2: PlayerData = null;
+    private playerCount: PlayerCount = 1;
     private cameraX = 0;
     private keys: { [key: string]: boolean } = {};
     private score = 0;
@@ -182,6 +186,7 @@ export class GameManager extends cc.Component {
         cc.systemEvent.on(cc.SystemEvent.EventType.KEY_DOWN, this.onKeyDown, this);
         cc.systemEvent.on(cc.SystemEvent.EventType.KEY_UP, this.onKeyUp, this);
         this.highScore = Number(cc.sys.localStorage.getItem("webMarioHighScore") || 0);
+        this.playerCount = cc.sys.localStorage.getItem("webMarioPlayerCount") === "2" ? 2 : 1;
         this.authDraft.email = cc.sys.localStorage.getItem("webMarioEmail") || "";
         this.authDraft.name = cc.sys.localStorage.getItem("webMarioDisplayName") || "";
         this.prepareLevels();
@@ -315,10 +320,13 @@ export class GameManager extends cc.Component {
             this.showScoreboardOverlay();
             return;
         }
+        if (next === "select") {
+            this.showLevelSelectOverlay();
+            return;
+        }
         if (next === "clear" || next === "gameover" || next === "win") this.submitScoreIfEligible();
 
         const copy = {
-            select: ["Level Select", "Choose a world.", "WORLD 1-1", "WORLD 1-2"],
             paused: ["Paused", "Timer stopped. Ready when you are.", "RESUME", "RESTART"],
             clear: ["Level Clear", "Nice run. Continue to the next stage.", "NEXT", "LEVEL SELECT"],
             gameover: ["Game Over", "Mario ran out of lives.", "RETRY", "LEVEL SELECT"],
@@ -339,24 +347,50 @@ export class GameManager extends cc.Component {
     }
 
     private showMenuOverlay() {
-        const title = this.label("Web Mario", 0, 142, 66, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
+        const title = this.label("Web Mario", 0, 166, 66, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
         title.node.width = 760;
         this.overlay.addChild(title.node);
 
-        const body = this.label(`Cocos Creator edition. Best score: ${this.highScore}`, 0, 82, 24, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+        const body = this.label(`Cocos Creator edition. Best score: ${this.highScore}`, 0, 106, 24, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
         body.node.width = 780;
         this.overlay.addChild(body.node);
 
-        const account = this.label(this.accountSummary(), 0, 38, 20, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+        const account = this.label(this.accountSummary(), 0, 66, 20, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
         account.node.width = 820;
         this.overlay.addChild(account.node);
 
-        this.makeButton("START", -120, -38, () => this.primaryAction());
-        this.makeButton("LEVEL SELECT", 120, -38, () => this.secondaryAction());
-        this.makeButton(this.currentUser ? "ACCOUNT" : "REGISTER / LOGIN", -120, -108, () => this.showOverlay("auth"), 220);
-        this.makeButton("SCOREBOARD", 120, -108, () => {
+        const mode = this.label(`Mode: ${this.playerModeText()}`, 0, 24, 20, new cc.Color(255, 224, 112), cc.Label.HorizontalAlign.CENTER);
+        mode.node.width = 760;
+        this.overlay.addChild(mode.node);
+
+        this.makeButton("1 PLAYER", -110, -24, () => this.setPlayerCount(1), 180);
+        this.makeButton("2 PLAYERS", 110, -24, () => this.setPlayerCount(2), 180);
+        this.makeButton("START", -120, -94, () => this.primaryAction());
+        this.makeButton("LEVEL SELECT", 120, -94, () => this.secondaryAction());
+        this.makeButton(this.currentUser ? "ACCOUNT" : "REGISTER / LOGIN", -120, -164, () => this.showOverlay("auth"), 220);
+        this.makeButton("SCOREBOARD", 120, -164, () => {
             this.openScoreboard("menu");
         }, 220);
+    }
+
+    private showLevelSelectOverlay() {
+        const title = this.label("Level Select", 0, 148, 62, new cc.Color(255, 211, 76), cc.Label.HorizontalAlign.CENTER);
+        title.node.width = 760;
+        this.overlay.addChild(title.node);
+
+        const body = this.label("Choose players and world.", 0, 90, 24, cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+        body.node.width = 780;
+        this.overlay.addChild(body.node);
+
+        const mode = this.label(`Mode: ${this.playerModeText()}`, 0, 48, 20, new cc.Color(255, 224, 112), cc.Label.HorizontalAlign.CENTER);
+        mode.node.width = 760;
+        this.overlay.addChild(mode.node);
+
+        this.makeButton("1 PLAYER", -110, 0, () => this.setPlayerCount(1), 180);
+        this.makeButton("2 PLAYERS", 110, 0, () => this.setPlayerCount(2), 180);
+        this.makeButton("WORLD 1-1", -120, -82, () => this.startLevel(0));
+        this.makeButton("WORLD 1-2", 120, -82, () => this.startLevel(1));
+        this.makeCommonOverlayButtons("select", -152);
     }
 
     private showAuthOverlay() {
@@ -457,6 +491,16 @@ export class GameManager extends cc.Component {
         if (this.state === "select") this.startLevel(1);
         else if (this.state === "paused") this.startLevel(this.levelIndex);
         else this.showOverlay("select");
+    }
+
+    private setPlayerCount(count: PlayerCount) {
+        this.playerCount = count;
+        cc.sys.localStorage.setItem("webMarioPlayerCount", String(count));
+        if (this.state === "menu" || this.state === "select") this.showOverlay(this.state);
+    }
+
+    private playerModeText() {
+        return this.playerCount === 2 ? "2 Players" : "1 Player";
     }
 
     private makeButton(text: string, x: number, y: number, cb: Function, width = 196) {
@@ -584,7 +628,7 @@ export class GameManager extends cc.Component {
         this.overlay.active = false;
         this.buildLevel(source);
         this.player = this.createPlayer(source.spawn.x, source.spawn.y, "p1", new cc.Color(229, 57, 53));
-        this.player2 = this.createPlayer(source.spawn.x + 56, source.spawn.y, "p2", new cc.Color(68, 170, 255));
+        this.player2 = this.playerCount === 2 ? this.createPlayer(source.spawn.x + 56, source.spawn.y, "p2", new cc.Color(68, 170, 255)) : null;
         this.state = "playing";
         this.playMusic(source.music);
         this.updateHud();
@@ -1096,7 +1140,17 @@ export class GameManager extends cc.Component {
         this.bumpNode(block.node);
         if (block.node) this.repaintRect(block.node, new cc.Color(128, 96, 66));
         if (block.payload === "mushroom") {
-            const item: ItemData = { type: "mushroom", x: block.x + 8, y: block.y + block.h + 4, w: 34, h: 34, vx: 80, vy: 260 };
+            const item: ItemData = {
+                type: "mushroom",
+                x: block.x + 7,
+                y: block.y + 6,
+                w: 34,
+                h: 34,
+                vx: 90,
+                vy: 0,
+                emerging: true,
+                emergeTop: block.y + block.h + 2
+            };
             item.node = this.entityNode("Mushroom", this.getItemFrame("mushroom"), item.w, item.h, new cc.Color(238, 75, 55));
             item.node.setPosition(item.x, item.y);
             this.world.addChild(item.node);
@@ -1144,16 +1198,36 @@ export class GameManager extends cc.Component {
 
     private updateItems(dt: number) {
         this.items.forEach((item) => {
-            item.vy = Math.max(-MAX_FALL, item.vy - GRAVITY * dt);
-            item.x += item.vx * dt;
-            item.y += item.vy * dt;
-            this.levels[this.levelIndex].solids.forEach((s) => {
-                if (!this.overlap(item, s)) return;
-                if (item.vy < 0) {
-                    item.y = s.y + s.h;
+            if (item.emerging) {
+                item.y += 74 * dt;
+                if (item.y >= (item.emergeTop || item.y)) {
+                    item.y = item.emergeTop || item.y;
+                    item.emerging = false;
                     item.vy = 0;
-                } else item.vx *= -1;
-            });
+                }
+            } else {
+                item.vy = Math.max(-MAX_FALL, item.vy - GRAVITY * dt);
+                item.x += item.vx * dt;
+                this.levels[this.levelIndex].solids.forEach((s) => {
+                    if (!this.overlap(item, s)) return;
+                    if (item.vx > 0) item.x = s.x - item.w;
+                    else if (item.vx < 0) item.x = s.x + s.w;
+                    item.vx *= -1;
+                });
+
+                item.y += item.vy * dt;
+                this.levels[this.levelIndex].solids.forEach((s) => {
+                    if (!this.overlap(item, s)) return;
+                    if (item.vy < 0) {
+                        item.y = s.y + s.h;
+                        item.vy = 0;
+                    } else if (item.vy > 0) {
+                        item.y = s.y - item.h;
+                        item.vy = -40;
+                    }
+                });
+            }
+
             item.node.setPosition(item.x, item.y);
             const receiver = this.activePlayers().filter((p) => this.overlap(p, item))[0];
             if (receiver) {
@@ -1198,9 +1272,6 @@ export class GameManager extends cc.Component {
             if (coin.taken || !coin.node) return;
             coin.node.scaleX = 0.72 + Math.abs(Math.sin(t + coin.x * 0.02)) * 0.5;
             coin.node.y = coin.y + 14 + Math.sin(t + coin.x * 0.01) * 5;
-        });
-        this.items.forEach((item) => {
-            if (item.node) item.node.angle += 2;
         });
     }
 
@@ -1417,6 +1488,7 @@ export class GameManager extends cc.Component {
         this.loadAtlas("items", "AS2_source/effects_UI_tiles/items");
         this.loadFrame("flag", "AS2_source/pictures/flag");
         this.loadFrame("smoke", "AS2_source/pictures/smoke");
+        this.loadFrame("mushroom", "AS2_source/effects_UI_tiles/mushroom");
     }
 
     private loadAtlas(key: string, path: string) {
@@ -1512,7 +1584,8 @@ export class GameManager extends cc.Component {
     }
 
     private getItemFrame(type: "mushroom"): cc.SpriteFrame {
-        return this.atlasFrame("items", type === "mushroom" ? "items_0" : "items_0");
+        if (type === "mushroom") return this.singleFrame("mushroom") || this.atlasFrame("items", "items_0");
+        return this.atlasFrame("items", "items_0");
     }
 
     private enemyColor(type: "goomba" | "turtle" | "flower"): cc.Color {
