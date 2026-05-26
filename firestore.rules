@@ -10,10 +10,15 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == uid && request.resource.data.uid == uid;
     }
 
+    function allowedBoard(board) {
+      return board in ['scores', 'scores_world_1_1', 'scores_world_1_2'];
+    }
+
     function validScore() {
       return request.resource.data.keys().hasOnly([
         'uid',
         'name',
+        'scope',
         'score',
         'coins',
         'world',
@@ -22,6 +27,7 @@ service cloud.firestore {
       && request.resource.data.name is string
       && request.resource.data.name.size() > 0
       && request.resource.data.name.size() <= 20
+      && request.resource.data.scope is string
       && request.resource.data.score is int
       && request.resource.data.score >= 0
       && request.resource.data.coins is int
@@ -30,10 +36,16 @@ service cloud.firestore {
       && request.resource.data.world.size() <= 20;
     }
 
-    match /scores/{uid} {
-      allow read: if true;
-      allow create: if ownsScore(uid) && validScore();
-      allow update: if ownsScore(uid) && validScore()
+    match /{board}/{uid} {
+      allow read: if allowedBoard(board);
+      allow create: if allowedBoard(board)
+        && request.resource.data.scope == board
+        && ownsScore(uid)
+        && validScore();
+      allow update: if allowedBoard(board)
+        && request.resource.data.scope == board
+        && ownsScore(uid)
+        && validScore()
         && request.resource.data.score >= resource.data.score;
       allow delete: if false;
     }

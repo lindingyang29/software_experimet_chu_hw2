@@ -3,6 +3,7 @@ const { ccclass } = cc._decorator;
 type RectKind = "ground" | "brick" | "question" | "pipe" | "step";
 type BlockPayload = "coin" | "mushroom" | "";
 type GameState = "menu" | "select" | "auth" | "scores" | "playing" | "paused" | "clear" | "gameover" | "win";
+type ScoreScope = "all" | "world1" | "world2";
 
 interface RectData {
     x: number;
@@ -162,7 +163,9 @@ export class GameManager extends cc.Component {
     private topScores: ScoreEntry[] = [];
     private scoreboardMessage = "Loading scoreboard...";
     private bestUploadedScore = 0;
+    private bestUploadedScores: { [key: string]: number } = { all: 0, world1: 0, world2: 0 };
     private scoreboardBackState: GameState = "menu";
+    private scoreboardScope: ScoreScope = "all";
 
     onLoad() {
         cc.macro.ENABLE_MULTI_TOUCH = false;
@@ -390,14 +393,21 @@ export class GameManager extends cc.Component {
         status.node.width = 820;
         this.overlay.addChild(status.node);
 
+        const scope = this.label(`Showing ${this.scoreboardTitle(this.scoreboardScope)}`, 0, 92, 18, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+        scope.node.width = 820;
+        this.overlay.addChild(scope.node);
+        this.makeButton("ALL", -150, 62, () => this.setScoreboardScope("all"), 110);
+        this.makeButton("1-1", 0, 62, () => this.setScoreboardScope("world1"), 110);
+        this.makeButton("1-2", 150, 62, () => this.setScoreboardScope("world2"), 110);
+
         if (this.topScores.length === 0) {
-            const empty = this.label(this.scoreboardMessage, 0, 44, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
+            const empty = this.label(this.scoreboardMessage, 0, 0, 22, new cc.Color(188, 229, 255), cc.Label.HorizontalAlign.CENTER);
             empty.node.width = 820;
             this.overlay.addChild(empty.node);
         } else {
             this.topScores.forEach((entry, index) => {
                 const line = `${index + 1}. ${entry.name}   ${entry.score} pts   ${entry.coins} coins   ${entry.world}`;
-                const row = this.label(line, 0, 82 - index * 30, 20, index === 0 ? new cc.Color(255, 231, 112) : cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
+                const row = this.label(line, 0, 28 - index * 25, 18, index === 0 ? new cc.Color(255, 231, 112) : cc.Color.WHITE, cc.Label.HorizontalAlign.CENTER);
                 row.node.width = 860;
                 this.overlay.addChild(row.node);
             });
@@ -410,6 +420,13 @@ export class GameManager extends cc.Component {
 
     private openScoreboard(backState: GameState) {
         this.scoreboardBackState = backState;
+        this.scoreboardMessage = "Loading scoreboard...";
+        this.showOverlay("scores");
+        this.loadScoreboard();
+    }
+
+    private setScoreboardScope(scope: ScoreScope) {
+        this.scoreboardScope = scope;
         this.scoreboardMessage = "Loading scoreboard...";
         this.showOverlay("scores");
         this.loadScoreboard();
@@ -461,10 +478,10 @@ export class GameManager extends cc.Component {
         edit.placeholderFontColor = new cc.Color(92, 105, 125);
         edit.lineHeight = h;
         edit.maxLength = password ? 64 : 32;
-        edit.inputFlag = password ? cc.EditBox.InputFlag.PASSWORD : cc.EditBox.InputFlag.DEFAULT;
+        edit.inputFlag = cc.EditBox.InputFlag.DEFAULT;
         edit.inputMode = email ? cc.EditBox.InputMode.EMAIL_ADDR : cc.EditBox.InputMode.SINGLE_LINE;
         edit.returnType = cc.EditBox.KeyboardReturnType.DONE;
-        edit.stayOnTop = true;
+        edit.stayOnTop = false;
         node.on("text-changed", () => this.captureAuthInput(field, edit), this);
         node.on("editing-did-ended", () => this.captureAuthInput(field, edit), this);
         node.on("editing-return", () => this.captureAuthInput(field, edit), this);
@@ -653,37 +670,50 @@ export class GameManager extends cc.Component {
     private saveProfileName(user: any, name: string): Promise<void> {
         if (!user || !name) return Promise.resolve();
         const firebase = (window as any).firebase;
-        const profileScore = Math.max(0, this.bestUploadedScore, this.score);
+        const profileScore = Math.max(0, this.bestUploadedScores.all || 0, this.score);
+        this.bestUploadedScores.all = profileScore;
         this.bestUploadedScore = profileScore;
         return user.updateProfile({ displayName: name })
             .then(() => {
-                const ref = this.firestore.collection("scores").doc(user.uid);
-                return ref.get().then((doc: any) => {
-                    if (doc.exists) {
+                const updates = this.scoreScopes().map((scope) => {
+                    const ref = this.firestore.collection(this.scopeCollection(scope)).doc(user.uid);
+                    return ref.get().then((doc: any) => {
+                        if (doc.exists) {
+                            return ref.set({
+                                uid: user.uid,
+                                name,
+                                scope: this.scopeCollection(scope),
+                                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                            }, { merge: true });
+                        }
+                        if (scope !== "all") return Promise.resolve();
                         return ref.set({
                             uid: user.uid,
                             name,
+                            scope: this.scopeCollection(scope),
+                            score: profileScore,
+                            coins: profileScore === this.score ? this.coinCount : 0,
+                            world: profileScore === this.score && this.levels[this.levelIndex] ? this.levels[this.levelIndex].name : "-",
                             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                         }, { merge: true });
-                    }
-                    return ref.set({
-                        uid: user.uid,
-                        name,
-                        score: profileScore,
-                        coins: profileScore === this.score ? this.coinCount : 0,
-                        world: profileScore === this.score && this.levels[this.levelIndex] ? this.levels[this.levelIndex].name : "-",
-                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                    }, { merge: true });
+                    });
                 });
+                return Promise.all(updates).then(() => undefined);
             });
     }
 
     private loadUserCloudScore() {
         if (!this.firestore || !this.currentUser) return;
-        this.firestore.collection("scores").doc(this.currentUser.uid).get()
-            .then((doc: any) => {
-                const data = doc.exists ? doc.data() : null;
-                this.bestUploadedScore = data && typeof data.score === "number" ? data.score : 0;
+        const loads = this.scoreScopes().map((scope) => {
+            return this.firestore.collection(this.scopeCollection(scope)).doc(this.currentUser.uid).get()
+                .then((doc: any) => {
+                    const data = doc.exists ? doc.data() : null;
+                    this.bestUploadedScores[scope] = data && typeof data.score === "number" ? data.score : 0;
+                });
+        });
+        Promise.all(loads)
+            .then(() => {
+                this.bestUploadedScore = this.bestUploadedScores.all || 0;
                 this.submitScoreIfEligible();
             })
             .catch((err: any) => {
@@ -699,7 +729,7 @@ export class GameManager extends cc.Component {
         }
 
         this.scoreboardMessage = "Loading scoreboard...";
-        this.firestore.collection("scores").orderBy("score", "desc").limit(10).get()
+        this.firestore.collection(this.scopeCollection(this.scoreboardScope)).orderBy("score", "desc").limit(10).get()
             .then((snapshot: any) => {
                 this.topScores = [];
                 snapshot.forEach((doc: any) => {
@@ -712,7 +742,7 @@ export class GameManager extends cc.Component {
                         world: data.world || "-"
                     });
                 });
-                this.scoreboardMessage = this.topScores.length ? "" : "No scores yet. Finish a run after signing in.";
+                this.scoreboardMessage = this.topScores.length ? "" : `No ${this.scoreboardTitle(this.scoreboardScope)} scores yet.`;
                 this.refreshCurrentOverlay();
             })
             .catch((err: any) => {
@@ -723,26 +753,34 @@ export class GameManager extends cc.Component {
     }
 
     private submitScoreIfEligible() {
-        if (!this.firestore || !this.currentUser || this.score <= this.bestUploadedScore) return;
+        if (!this.firestore || !this.currentUser) return;
         const firebase = (window as any).firebase;
         const uploadScore = this.score;
-        const entry = {
-            uid: this.currentUser.uid,
-            name: this.displayName(),
-            score: uploadScore,
-            coins: this.coinCount,
-            world: this.levels[this.levelIndex] ? this.levels[this.levelIndex].name : "-",
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-        this.bestUploadedScore = uploadScore;
-        this.firestore.collection("scores").doc(this.currentUser.uid).set(entry, { merge: true })
-            .then(() => {
-                this.scoreboardMessage = "Score uploaded.";
-                this.loadScoreboard();
-            })
-            .catch((err: any) => {
-                this.firebaseMessage = this.firebaseErrorText(err);
-            });
+        const scopes = ["all", this.scoreScopeForLevel()] as ScoreScope[];
+        scopes.forEach((scope) => {
+            if (uploadScore <= (this.bestUploadedScores[scope] || 0)) return;
+            this.bestUploadedScores[scope] = uploadScore;
+            if (scope === "all") {
+                this.bestUploadedScore = uploadScore;
+            }
+            const entry = {
+                uid: this.currentUser.uid,
+                name: this.displayName(),
+                scope: this.scopeCollection(scope),
+                score: uploadScore,
+                coins: this.coinCount,
+                world: this.levels[this.levelIndex] ? this.levels[this.levelIndex].name : "-",
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
+            this.firestore.collection(this.scopeCollection(scope)).doc(this.currentUser.uid).set(entry, { merge: true })
+                .then(() => {
+                    this.scoreboardMessage = "Score uploaded.";
+                    if (this.state === "scores") this.loadScoreboard();
+                })
+                .catch((err: any) => {
+                    this.firebaseMessage = this.firebaseErrorText(err);
+                });
+        });
     }
 
     private requireFirebase() {
@@ -767,6 +805,26 @@ export class GameManager extends cc.Component {
         if (this.authInputs.name) this.captureAuthInput("name", this.authInputs.name);
     }
 
+    private scoreScopes(): ScoreScope[] {
+        return ["all", "world1", "world2"];
+    }
+
+    private scopeCollection(scope: ScoreScope) {
+        if (scope === "world1") return "scores_world_1_1";
+        if (scope === "world2") return "scores_world_1_2";
+        return "scores";
+    }
+
+    private scoreboardTitle(scope: ScoreScope) {
+        if (scope === "world1") return "World 1-1";
+        if (scope === "world2") return "World 1-2";
+        return "All Worlds";
+    }
+
+    private scoreScopeForLevel(): ScoreScope {
+        return this.levelIndex === 0 ? "world1" : "world2";
+    }
+
     private cleanName(name: string) {
         return (name || "Player").replace(/[<>]/g, "").trim().slice(0, 20) || "Player";
     }
@@ -778,7 +836,7 @@ export class GameManager extends cc.Component {
     }
 
     private accountSummary() {
-        if (this.currentUser) return `Signed in: ${this.displayName()}. Cloud best: ${this.bestUploadedScore}`;
+        if (this.currentUser) return `Signed in: ${this.displayName()}. Cloud best: ${this.bestUploadedScores.all || this.bestUploadedScore}`;
         return this.firebaseReady ? "Not signed in. Register to upload scores." : this.firebaseMessage;
     }
 
