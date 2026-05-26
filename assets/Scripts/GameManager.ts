@@ -69,6 +69,8 @@ interface PlayerData {
     facing: number;
     onGround: boolean;
     big: boolean;
+    crouching: boolean;
+    jumpsUsed: number;
     invincible: number;
     anim: number;
     node: cc.Node;
@@ -88,7 +90,17 @@ const MAX_FALL = 980;
 const RUN_ACCEL = 3800;
 const FRICTION = 3200;
 const MAX_RUN = 285;
+const CROUCH_MAX_RUN = 85;
 const JUMP_V = 760;
+const DOUBLE_JUMP_V = 690;
+const FAST_FALL_V = 1180;
+const FAST_FALL_GRAVITY = 3600;
+const SMALL_W = 42;
+const SMALL_H = 48;
+const BIG_W = 48;
+const BIG_H = 72;
+const SMALL_CROUCH_H = 34;
+const BIG_CROUCH_H = 44;
 
 @ccclass
 export class GameManager extends cc.Component {
@@ -115,6 +127,8 @@ export class GameManager extends cc.Component {
     private audioClips: { [key: string]: cc.AudioClip } = {};
     private atlases: { [key: string]: cc.SpriteAtlas } = {};
     private frames: { [key: string]: cc.SpriteFrame } = {};
+    private jumpQueued = false;
+    private fastFallQueued = false;
 
     onLoad() {
         cc.macro.ENABLE_MULTI_TOUCH = false;
@@ -338,10 +352,10 @@ export class GameManager extends cc.Component {
     }
 
     private createPlayer(x: number, y: number): PlayerData {
-        const node = this.entityNode("Mario", this.getMarioFrame(false, 0), 42, 48, new cc.Color(229, 57, 53));
+        const node = this.entityNode("Mario", this.getMarioFrame(false, 0), SMALL_W, SMALL_H, new cc.Color(229, 57, 53));
         node.setPosition(x, y);
         this.world.addChild(node);
-        return { x, y, w: 42, h: 48, vx: 0, vy: 0, facing: 1, onGround: false, big: false, invincible: 0, anim: 0, node };
+        return { x, y, w: SMALL_W, h: SMALL_H, vx: 0, vy: 0, facing: 1, onGround: false, big: false, crouching: false, jumpsUsed: 0, invincible: 0, anim: 0, node };
     }
 
     private updatePlayer(dt: number) {
@@ -350,29 +364,100 @@ export class GameManager extends cc.Component {
         p.invincible = Math.max(0, p.invincible - dt);
         const left = this.keys[cc.macro.KEY.a] || this.keys[cc.macro.KEY.left];
         const right = this.keys[cc.macro.KEY.d] || this.keys[cc.macro.KEY.right];
-        const jump = this.keys[cc.macro.KEY.w] || this.keys[cc.macro.KEY.up] || this.keys[cc.macro.KEY.space];
+        const down = this.isDownHeld();
+        this.updateCrouchState(down);
 
-        if (left) { p.vx -= RUN_ACCEL * dt; p.facing = -1; }
-        if (right) { p.vx += RUN_ACCEL * dt; p.facing = 1; }
+        const crouchLocked = p.crouching && p.onGround;
+        const accel = crouchLocked ? RUN_ACCEL * 0.28 : RUN_ACCEL;
+        if (left) { p.vx -= accel * dt; p.facing = -1; }
+        if (right) { p.vx += accel * dt; p.facing = 1; }
         if (!left && !right) p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), FRICTION * dt);
-        p.vx = cc.misc.clampf(p.vx, -MAX_RUN, MAX_RUN);
+        const maxRun = crouchLocked ? CROUCH_MAX_RUN : MAX_RUN;
+        p.vx = cc.misc.clampf(p.vx, -maxRun, maxRun);
 
-        if (jump && p.onGround) {
-            p.vy = JUMP_V;
-            p.onGround = false;
-            this.playEffect("jump");
+        if (this.jumpQueued) {
+            this.tryJump();
+            this.jumpQueued = false;
         }
 
-        p.vy = Math.max(-MAX_FALL, p.vy - GRAVITY * dt);
+        if (this.fastFallQueued && !p.onGround) {
+            p.vy = Math.min(p.vy, -FAST_FALL_V);
+            this.spawnText("FAST", p.x + 4, p.y + p.h + 12, new cc.Color(170, 226, 255));
+        }
+        this.fastFallQueued = false;
+
+        const fastFalling = down && !p.onGround && p.vy < 0;
+        const fallLimit = fastFalling ? FAST_FALL_V : MAX_FALL;
+        const gravity = fastFalling ? FAST_FALL_GRAVITY : GRAVITY;
+        p.vy = Math.max(-fallLimit, p.vy - gravity * dt);
         p.x += p.vx * dt;
         this.resolvePlayer("x");
         p.y += p.vy * dt;
         p.onGround = false;
         this.resolvePlayer("y");
+        this.updateCrouchState(down);
         p.x = cc.misc.clampf(p.x, 0, this.levels[this.levelIndex].width - p.w);
         p.node.setPosition(p.x, p.y);
         p.node.opacity = p.invincible > 0 && Math.floor(p.invincible * 14) % 2 === 0 ? 90 : 255;
         this.updatePlayerSprite();
+    }
+
+    private tryJump() {
+        const p = this.player;
+        if (p.onGround) {
+            if (p.crouching && this.canStand()) this.setPlayerPose(false);
+            p.vy = JUMP_V;
+            p.onGround = false;
+            p.jumpsUsed = 1;
+            this.playEffect("jump");
+            return;
+        }
+
+        if (p.jumpsUsed < 2) {
+            p.vy = DOUBLE_JUMP_V;
+            p.jumpsUsed = 2;
+            this.spawnSmoke(p.x + p.w / 2, p.y + 8);
+            this.playEffect("jump");
+        }
+    }
+
+    private updateCrouchState(down: boolean) {
+        const p = this.player;
+        if (!p) return;
+        const shouldCrouch = down && p.onGround;
+        if (shouldCrouch) {
+            this.setPlayerPose(true);
+        } else if (p.crouching && this.canStand()) {
+            this.setPlayerPose(false);
+        }
+    }
+
+    private setPlayerPose(crouching: boolean) {
+        const p = this.player;
+        const size = this.playerSize(p.big, crouching);
+        p.crouching = crouching;
+        p.w = size.w;
+        p.h = size.h;
+        p.node.setContentSize(p.w, p.h);
+        this.setEntityFrame(p.node, this.getMarioFrame(p.big, crouching ? 14 : 0), p.w, p.h, p.facing < 0);
+    }
+
+    private playerSize(big: boolean, crouching: boolean) {
+        return {
+            w: big ? BIG_W : SMALL_W,
+            h: crouching ? (big ? BIG_CROUCH_H : SMALL_CROUCH_H) : (big ? BIG_H : SMALL_H)
+        };
+    }
+
+    private canStand() {
+        const p = this.player;
+        const normal = this.playerSize(p.big, false);
+        const probe = { x: p.x, y: p.y, w: normal.w, h: normal.h };
+        return !this.levels[this.levelIndex].solids.some((s) => this.overlap(probe, s));
+    }
+
+    private isDownHeld() {
+        return this.keys[cc.macro.KEY.s] || this.keys[cc.macro.KEY.down];
     }
 
     private resolvePlayer(axis: "x" | "y") {
@@ -380,6 +465,7 @@ export class GameManager extends cc.Component {
         this.levels[this.levelIndex].solids.forEach((s) => {
             if (!this.overlap(p, s)) return;
             if (axis === "x") {
+                if (s.kind === "question" && this.isHeadTouchingQuestion(s)) this.hitQuestion(s);
                 if (p.vx > 0) p.x = s.x - p.w;
                 else if (p.vx < 0) p.x = s.x + s.w;
                 p.vx = 0;
@@ -388,6 +474,7 @@ export class GameManager extends cc.Component {
                     p.y = s.y + s.h;
                     p.vy = 0;
                     p.onGround = true;
+                    p.jumpsUsed = 0;
                 } else if (p.vy > 0) {
                     p.y = s.y - p.h;
                     p.vy = -70;
@@ -395,6 +482,11 @@ export class GameManager extends cc.Component {
                 }
             }
         });
+    }
+
+    private isHeadTouchingQuestion(block: RectData) {
+        const p = this.player;
+        return p.vy >= 0 && p.y + p.h > block.y && p.y + p.h < block.y + 18;
     }
 
     private hitQuestion(block: RectData) {
@@ -542,9 +634,7 @@ export class GameManager extends cc.Component {
         if (!forceDeath && p.invincible > 0) return;
         if (!forceDeath && p.big) {
             p.big = false;
-            p.h = 48;
-            p.w = 42;
-            p.node.setContentSize(p.w, p.h);
+            this.setPlayerPose(false);
             p.invincible = 1.5;
             this.playEffect("hurt");
             return;
@@ -557,16 +647,14 @@ export class GameManager extends cc.Component {
             return;
         }
         const spawn = this.levels[this.levelIndex].spawn;
-        p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.invincible = 1.8;
+        p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.invincible = 1.8; p.jumpsUsed = 0;
+        this.setPlayerPose(false);
     }
 
     private powerUp() {
         if (!this.player.big) {
             this.player.big = true;
-            this.player.h = 72;
-            this.player.w = 48;
-            this.player.node.setContentSize(this.player.w, this.player.h);
-            this.updatePlayerSprite();
+            this.setPlayerPose(this.player.crouching);
         }
         this.score += 500;
         this.spawnText("POWER UP", this.player.x - 18, this.player.y + this.player.h + 22, new cc.Color(255, 224, 112));
@@ -578,12 +666,23 @@ export class GameManager extends cc.Component {
     }
 
     private onKeyDown(event: cc.Event.EventKeyboard) {
+        const wasDown = this.keys[event.keyCode];
         this.keys[event.keyCode] = true;
+        if (!wasDown && this.state === "playing" && this.isJumpKey(event.keyCode)) this.jumpQueued = true;
+        if (!wasDown && this.state === "playing" && this.isDownKey(event.keyCode)) this.fastFallQueued = true;
         if (event.keyCode === cc.macro.KEY.p && this.state === "playing") this.showOverlay("paused");
     }
 
     private onKeyUp(event: cc.Event.EventKeyboard) {
         this.keys[event.keyCode] = false;
+    }
+
+    private isJumpKey(keyCode: number) {
+        return keyCode === cc.macro.KEY.w || keyCode === cc.macro.KEY.up || keyCode === cc.macro.KEY.space;
+    }
+
+    private isDownKey(keyCode: number) {
+        return keyCode === cc.macro.KEY.s || keyCode === cc.macro.KEY.down;
     }
 
     private label(text: string, x: number, y: number, size: number, color: cc.Color, align: cc.Label.HorizontalAlign) {
@@ -732,6 +831,10 @@ export class GameManager extends cc.Component {
         const visual = node.getChildByName("Visual");
         const fallback = node.getChildByName("Fallback");
         if (!visual) return;
+        if (fallback) {
+            fallback.setContentSize(w, h);
+            this.repaintRect(fallback, fallback.color);
+        }
         visual.setPosition(w / 2, h / 2);
         visual.setContentSize(w, h);
         visual.scaleX = flip ? -1 : 1;
@@ -754,7 +857,8 @@ export class GameManager extends cc.Component {
     private updatePlayerSprite() {
         const p = this.player;
         let index = 0;
-        if (!p.onGround) index = 5;
+        if (p.crouching && p.onGround) index = 14;
+        else if (!p.onGround) index = 5;
         else if (Math.abs(p.vx) > 30) index = 1 + (Math.floor(p.anim * 12) % 3);
         this.setEntityFrame(p.node, this.getMarioFrame(p.big, index), p.w, p.h, p.facing < 0);
     }
