@@ -157,16 +157,20 @@ export class GameManager extends cc.Component {
     private firebaseAuth: any = null;
     private firestore: any = null;
     private authInputs: { email?: cc.EditBox; password?: cc.EditBox; name?: cc.EditBox } = {};
+    private authDraft = { email: "", password: "", name: "" };
     private authMessage = "";
     private topScores: ScoreEntry[] = [];
     private scoreboardMessage = "Loading scoreboard...";
     private bestUploadedScore = 0;
+    private scoreboardBackState: GameState = "menu";
 
     onLoad() {
         cc.macro.ENABLE_MULTI_TOUCH = false;
         cc.systemEvent.on(cc.SystemEvent.EventType.KEY_DOWN, this.onKeyDown, this);
         cc.systemEvent.on(cc.SystemEvent.EventType.KEY_UP, this.onKeyUp, this);
         this.highScore = Number(cc.sys.localStorage.getItem("webMarioHighScore") || 0);
+        this.authDraft.email = cc.sys.localStorage.getItem("webMarioEmail") || "";
+        this.authDraft.name = cc.sys.localStorage.getItem("webMarioDisplayName") || "";
         this.prepareLevels();
         this.loadVisuals();
         this.loadAudio();
@@ -313,6 +317,7 @@ export class GameManager extends cc.Component {
 
         this.makeButton(copy[2], -120, -35, () => this.primaryAction());
         this.makeButton(copy[3], 120, -35, () => this.secondaryAction());
+        if (next === "paused") this.makeButton("SCOREBOARD", 0, -105, () => this.openScoreboard("paused"), 220);
     }
 
     private showMenuOverlay() {
@@ -332,9 +337,7 @@ export class GameManager extends cc.Component {
         this.makeButton("LEVEL SELECT", 120, -38, () => this.secondaryAction());
         this.makeButton(this.currentUser ? "ACCOUNT" : "REGISTER / LOGIN", -120, -108, () => this.showOverlay("auth"), 220);
         this.makeButton("SCOREBOARD", 120, -108, () => {
-            this.scoreboardMessage = "Loading scoreboard...";
-            this.showOverlay("scores");
-            this.loadScoreboard();
+            this.openScoreboard("menu");
         }, 220);
     }
 
@@ -361,19 +364,18 @@ export class GameManager extends cc.Component {
             this.overlay.addChild(signedIn.node);
             this.makeButton("LOG OUT", -170, -54, () => this.logoutAccount(), 180);
             this.makeButton("SCOREBOARD", 0, -54, () => {
-                this.showOverlay("scores");
-                this.loadScoreboard();
+                this.openScoreboard("auth");
             }, 190);
             this.makeButton("BACK", 170, -54, () => this.showOverlay("menu"), 180);
             return;
         }
 
         this.makeFormLabel("Email address", 72);
-        this.authInputs.email = this.makeInput("you@example.com", 0, 42, 430, 46, false, cc.sys.localStorage.getItem("webMarioEmail") || "", true);
+        this.authInputs.email = this.makeInput("you@example.com", "email", 0, 42, 430, 46, false, this.authDraft.email, true);
         this.makeFormLabel("Password (at least 6 characters)", 6);
-        this.authInputs.password = this.makeInput("password", 0, -24, 430, 46, true, "");
+        this.authInputs.password = this.makeInput("password", "password", 0, -24, 430, 46, true, this.authDraft.password);
         this.makeFormLabel("Display name on scoreboard", -60);
-        this.authInputs.name = this.makeInput("player name", 0, -90, 430, 46, false, cc.sys.localStorage.getItem("webMarioDisplayName") || "");
+        this.authInputs.name = this.makeInput("player name", "name", 0, -90, 430, 46, false, this.authDraft.name);
         this.makeButton("REGISTER", -170, -170, () => this.registerAccount(), 180);
         this.makeButton("LOG IN", 0, -170, () => this.loginAccount(), 160);
         this.makeButton("BACK", 170, -170, () => this.showOverlay("menu"), 180);
@@ -403,7 +405,14 @@ export class GameManager extends cc.Component {
 
         this.makeButton("REFRESH", -180, -250, () => this.loadScoreboard(), 180);
         this.makeButton("ACCOUNT", 0, -250, () => this.showOverlay("auth"), 180);
-        this.makeButton("BACK", 180, -250, () => this.showOverlay("menu"), 180);
+        this.makeButton("BACK", 180, -250, () => this.showOverlay(this.scoreboardBackState), 180);
+    }
+
+    private openScoreboard(backState: GameState) {
+        this.scoreboardBackState = backState;
+        this.scoreboardMessage = "Loading scoreboard...";
+        this.showOverlay("scores");
+        this.loadScoreboard();
     }
 
     private primaryAction() {
@@ -440,7 +449,7 @@ export class GameManager extends cc.Component {
         this.overlay.addChild(formLabel.node);
     }
 
-    private makeInput(placeholder: string, x: number, y: number, w: number, h: number, password: boolean, value = "", email = false) {
+    private makeInput(placeholder: string, field: "email" | "password" | "name", x: number, y: number, w: number, h: number, password: boolean, value = "", email = false) {
         const node = this.rectNode(`Input ${placeholder}`, 0, 0, w, h, new cc.Color(245, 248, 255, 235));
         node.setPosition(x - w / 2, y - h / 2);
         const edit = node.addComponent(cc.EditBox);
@@ -448,15 +457,29 @@ export class GameManager extends cc.Component {
         edit.placeholder = placeholder;
         edit.fontSize = 20;
         edit.placeholderFontSize = 18;
-        edit.fontColor = new cc.Color(24, 34, 48);
+        edit.fontColor = cc.Color.BLACK;
         edit.placeholderFontColor = new cc.Color(92, 105, 125);
         edit.lineHeight = h;
         edit.maxLength = password ? 64 : 32;
         edit.inputFlag = password ? cc.EditBox.InputFlag.PASSWORD : cc.EditBox.InputFlag.DEFAULT;
-        edit.inputMode = email ? cc.EditBox.InputMode.EMAIL_ADDR : cc.EditBox.InputMode.ANY;
+        edit.inputMode = email ? cc.EditBox.InputMode.EMAIL_ADDR : cc.EditBox.InputMode.SINGLE_LINE;
         edit.returnType = cc.EditBox.KeyboardReturnType.DONE;
+        edit.stayOnTop = true;
+        node.on("text-changed", () => this.captureAuthInput(field, edit), this);
+        node.on("editing-did-ended", () => this.captureAuthInput(field, edit), this);
+        node.on("editing-return", () => this.captureAuthInput(field, edit), this);
         this.overlay.addChild(node);
+        this.scheduleOnce(() => {
+            if (edit.textLabel) edit.textLabel.node.color = cc.Color.BLACK;
+            if (edit.placeholderLabel) edit.placeholderLabel.node.color = new cc.Color(92, 105, 125);
+        }, 0);
         return edit;
+    }
+
+    private captureAuthInput(field: "email" | "password" | "name", input: cc.EditBox) {
+        this.authDraft[field] = this.inputValue(input);
+        if (field === "email") cc.sys.localStorage.setItem("webMarioEmail", this.authDraft.email);
+        if (field === "name") cc.sys.localStorage.setItem("webMarioDisplayName", this.authDraft.name);
     }
 
     private startLevel(index: number) {
@@ -557,6 +580,7 @@ export class GameManager extends cc.Component {
 
     private registerAccount() {
         if (!this.requireFirebase()) return;
+        this.captureAuthInputs();
         const email = this.inputValue(this.authInputs.email);
         const password = this.inputValue(this.authInputs.password);
         const name = this.cleanName(this.inputValue(this.authInputs.name));
@@ -588,6 +612,7 @@ export class GameManager extends cc.Component {
 
     private loginAccount() {
         if (!this.requireFirebase()) return;
+        this.captureAuthInputs();
         const email = this.inputValue(this.authInputs.email);
         const password = this.inputValue(this.authInputs.password);
         const name = this.cleanName(this.inputValue(this.authInputs.name));
@@ -734,6 +759,12 @@ export class GameManager extends cc.Component {
 
     private inputValue(input?: cc.EditBox) {
         return input ? String(input.string || "").trim() : "";
+    }
+
+    private captureAuthInputs() {
+        if (this.authInputs.email) this.captureAuthInput("email", this.authInputs.email);
+        if (this.authInputs.password) this.captureAuthInput("password", this.authInputs.password);
+        if (this.authInputs.name) this.captureAuthInput("name", this.authInputs.name);
     }
 
     private cleanName(name: string) {
@@ -1108,6 +1139,7 @@ export class GameManager extends cc.Component {
         if (!wasDown && this.state === "playing" && this.isJumpKey(event.keyCode)) this.jumpQueued = true;
         if (!wasDown && this.state === "playing" && this.isDownKey(event.keyCode)) this.fastFallQueued = true;
         if (event.keyCode === cc.macro.KEY.p && this.state === "playing") this.showOverlay("paused");
+        if (event.keyCode === cc.macro.KEY.b && (this.state === "playing" || this.state === "paused")) this.openScoreboard("paused");
     }
 
     private onKeyUp(event: cc.Event.EventKeyboard) {
