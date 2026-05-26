@@ -5,6 +5,7 @@ type BlockPayload = "coin" | "mushroom" | "";
 type GameState = "menu" | "select" | "auth" | "scores" | "playing" | "paused" | "clear" | "gameover" | "win";
 type ScoreScope = "world1" | "world2";
 type ScoreUploadScope = "all" | ScoreScope;
+type PlayerSlot = "p1" | "p2";
 
 interface RectData {
     x: number;
@@ -62,6 +63,7 @@ interface LevelData {
 }
 
 interface PlayerData {
+    slot: PlayerSlot;
     x: number;
     y: number;
     w: number;
@@ -73,6 +75,8 @@ interface PlayerData {
     big: boolean;
     crouching: boolean;
     jumpsUsed: number;
+    jumpQueued: boolean;
+    fastFallQueued: boolean;
     invincible: number;
     anim: number;
     node: cc.Node;
@@ -111,6 +115,10 @@ const BIG_W = 48;
 const BIG_H = 72;
 const SMALL_CROUCH_H = 34;
 const BIG_CROUCH_H = 44;
+const KEY_I = 73;
+const KEY_J = 74;
+const KEY_K = 75;
+const KEY_L = 76;
 const FIREBASE_CONFIG = {
     apiKey: "AIzaSyDvjVrLkf7x-8jbe0iJYrdkDhD3TEsx8-o",
     authDomain: "softwaremario.firebaseapp.com",
@@ -137,6 +145,7 @@ export class GameManager extends cc.Component {
     private levelIndex = 0;
     private state: GameState = "menu";
     private player: PlayerData = null;
+    private player2: PlayerData = null;
     private cameraX = 0;
     private keys: { [key: string]: boolean } = {};
     private score = 0;
@@ -151,8 +160,6 @@ export class GameManager extends cc.Component {
     private audioClips: { [key: string]: cc.AudioClip } = {};
     private atlases: { [key: string]: cc.SpriteAtlas } = {};
     private frames: { [key: string]: cc.SpriteFrame } = {};
-    private jumpQueued = false;
-    private fastFallQueued = false;
     private firebaseReady = false;
     private firebaseMessage = "Connecting to Firebase...";
     private currentUser: any = null;
@@ -201,13 +208,15 @@ export class GameManager extends cc.Component {
         this.currentTime = Math.max(0, this.levels[this.levelIndex].time - Math.floor(this.elapsed));
         if (this.currentTime <= 0) this.hurt(true);
 
-        this.updatePlayer(dt);
+        this.updatePlayer(dt, this.player);
+        this.updatePlayer(dt, this.player2);
         this.updateEnemies(dt);
         this.updateItems(dt);
         this.updateCoins();
         this.updateEffects(dt);
         this.updateWorldAnimations();
         this.updateCamera();
+        this.keepPlayer2OnCamera();
         this.updateHud();
 
         if (this.player.x > this.levels[this.levelIndex].flagX) {
@@ -217,7 +226,8 @@ export class GameManager extends cc.Component {
             else this.showOverlay("clear");
         }
 
-        if (this.player.y < -180) this.hurt(true);
+        if (this.player.y < -180) this.hurt(true, this.player);
+        if (this.player2 && this.player2.y < -180) this.hurt(true, this.player2);
     }
 
     private setupScene() {
@@ -573,7 +583,8 @@ export class GameManager extends cc.Component {
         this.world.removeAllChildren();
         this.overlay.active = false;
         this.buildLevel(source);
-        this.player = this.createPlayer(source.spawn.x, source.spawn.y);
+        this.player = this.createPlayer(source.spawn.x, source.spawn.y, "p1", new cc.Color(229, 57, 53));
+        this.player2 = this.createPlayer(source.spawn.x + 56, source.spawn.y, "p2", new cc.Color(68, 170, 255));
         this.state = "playing";
         this.playMusic(source.music);
         this.updateHud();
@@ -936,61 +947,59 @@ export class GameManager extends cc.Component {
         this.world.addChild(flag);
     }
 
-    private createPlayer(x: number, y: number): PlayerData {
-        const node = this.entityNode("Mario", this.getMarioFrame(false, 0), SMALL_W, SMALL_H, new cc.Color(229, 57, 53));
+    private createPlayer(x: number, y: number, slot: PlayerSlot, fallbackColor: cc.Color): PlayerData {
+        const node = this.entityNode(slot === "p1" ? "Mario P1" : "Mario P2", this.getMarioFrame(false, 0), SMALL_W, SMALL_H, fallbackColor);
+        if (slot === "p2") this.tintEntity(node, new cc.Color(118, 205, 255));
         node.setPosition(x, y);
         this.world.addChild(node);
-        return { x, y, w: SMALL_W, h: SMALL_H, vx: 0, vy: 0, facing: 1, onGround: false, big: false, crouching: false, jumpsUsed: 0, invincible: 0, anim: 0, node };
+        return { slot, x, y, w: SMALL_W, h: SMALL_H, vx: 0, vy: 0, facing: 1, onGround: false, big: false, crouching: false, jumpsUsed: 0, jumpQueued: false, fastFallQueued: false, invincible: 0, anim: 0, node };
     }
 
-    private updatePlayer(dt: number) {
-        const p = this.player;
+    private updatePlayer(dt: number, p: PlayerData) {
+        if (!p) return;
         p.anim += dt;
         p.invincible = Math.max(0, p.invincible - dt);
-        const left = this.keys[cc.macro.KEY.a] || this.keys[cc.macro.KEY.left];
-        const right = this.keys[cc.macro.KEY.d] || this.keys[cc.macro.KEY.right];
-        const down = this.isDownHeld();
-        this.updateCrouchState(down);
+        const controls = this.playerControls(p);
+        this.updateCrouchState(p, controls.down);
 
         const crouchLocked = p.crouching && p.onGround;
         const accel = crouchLocked ? RUN_ACCEL * 0.28 : RUN_ACCEL;
-        if (left) { p.vx -= accel * dt; p.facing = -1; }
-        if (right) { p.vx += accel * dt; p.facing = 1; }
-        if (!left && !right) p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), FRICTION * dt);
+        if (controls.left) { p.vx -= accel * dt; p.facing = -1; }
+        if (controls.right) { p.vx += accel * dt; p.facing = 1; }
+        if (!controls.left && !controls.right) p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), FRICTION * dt);
         const maxRun = crouchLocked ? CROUCH_MAX_RUN : MAX_RUN;
         p.vx = cc.misc.clampf(p.vx, -maxRun, maxRun);
 
-        if (this.jumpQueued) {
-            this.tryJump();
-            this.jumpQueued = false;
+        if (p.jumpQueued) {
+            this.tryJump(p);
+            p.jumpQueued = false;
         }
 
-        if (this.fastFallQueued && !p.onGround) {
+        if (p.fastFallQueued && !p.onGround) {
             p.vy = Math.min(p.vy, -FAST_FALL_V);
             this.spawnText("FAST", p.x + 4, p.y + p.h + 12, new cc.Color(170, 226, 255));
         }
-        this.fastFallQueued = false;
+        p.fastFallQueued = false;
 
-        const fastFalling = down && !p.onGround && p.vy < 0;
+        const fastFalling = controls.down && !p.onGround && p.vy < 0;
         const fallLimit = fastFalling ? FAST_FALL_V : MAX_FALL;
         const gravity = fastFalling ? FAST_FALL_GRAVITY : GRAVITY;
         p.vy = Math.max(-fallLimit, p.vy - gravity * dt);
         p.x += p.vx * dt;
-        this.resolvePlayer("x");
+        this.resolvePlayer(p, "x");
         p.y += p.vy * dt;
         p.onGround = false;
-        this.resolvePlayer("y");
-        this.updateCrouchState(down);
+        this.resolvePlayer(p, "y");
+        this.updateCrouchState(p, controls.down);
         p.x = cc.misc.clampf(p.x, 0, this.levels[this.levelIndex].width - p.w);
         p.node.setPosition(p.x, p.y);
         p.node.opacity = p.invincible > 0 && Math.floor(p.invincible * 14) % 2 === 0 ? 90 : 255;
-        this.updatePlayerSprite();
+        this.updatePlayerSprite(p);
     }
 
-    private tryJump() {
-        const p = this.player;
+    private tryJump(p: PlayerData) {
         if (p.onGround) {
-            if (p.crouching && this.canStand()) this.setPlayerPose(false);
+            if (p.crouching && this.canStand(p)) this.setPlayerPose(p, false);
             p.vy = JUMP_V;
             p.onGround = false;
             p.jumpsUsed = 1;
@@ -1006,19 +1015,17 @@ export class GameManager extends cc.Component {
         }
     }
 
-    private updateCrouchState(down: boolean) {
-        const p = this.player;
+    private updateCrouchState(p: PlayerData, down: boolean) {
         if (!p) return;
         const shouldCrouch = down && p.onGround;
         if (shouldCrouch) {
-            this.setPlayerPose(true);
-        } else if (p.crouching && this.canStand()) {
-            this.setPlayerPose(false);
+            this.setPlayerPose(p, true);
+        } else if (p.crouching && this.canStand(p)) {
+            this.setPlayerPose(p, false);
         }
     }
 
-    private setPlayerPose(crouching: boolean) {
-        const p = this.player;
+    private setPlayerPose(p: PlayerData, crouching: boolean) {
         const size = this.playerSize(p.big, crouching);
         p.crouching = crouching;
         p.w = size.w;
@@ -1034,23 +1041,32 @@ export class GameManager extends cc.Component {
         };
     }
 
-    private canStand() {
-        const p = this.player;
+    private canStand(p: PlayerData) {
         const normal = this.playerSize(p.big, false);
         const probe = { x: p.x, y: p.y, w: normal.w, h: normal.h };
         return !this.levels[this.levelIndex].solids.some((s) => this.overlap(probe, s));
     }
 
-    private isDownHeld() {
-        return this.keys[cc.macro.KEY.s] || this.keys[cc.macro.KEY.down];
+    private playerControls(p: PlayerData) {
+        if (p.slot === "p2") {
+            return {
+                left: !!this.keys[KEY_J],
+                right: !!this.keys[KEY_L],
+                down: !!this.keys[KEY_K]
+            };
+        }
+        return {
+            left: !!(this.keys[cc.macro.KEY.a] || this.keys[cc.macro.KEY.left]),
+            right: !!(this.keys[cc.macro.KEY.d] || this.keys[cc.macro.KEY.right]),
+            down: !!(this.keys[cc.macro.KEY.s] || this.keys[cc.macro.KEY.down])
+        };
     }
 
-    private resolvePlayer(axis: "x" | "y") {
-        const p = this.player;
+    private resolvePlayer(p: PlayerData, axis: "x" | "y") {
         this.levels[this.levelIndex].solids.forEach((s) => {
             if (!this.overlap(p, s)) return;
             if (axis === "x") {
-                if (s.kind === "question" && this.isHeadTouchingQuestion(s)) this.hitQuestion(s);
+                if (s.kind === "question" && this.isHeadTouchingQuestion(p, s)) this.hitQuestion(s);
                 if (p.vx > 0) p.x = s.x - p.w;
                 else if (p.vx < 0) p.x = s.x + s.w;
                 p.vx = 0;
@@ -1069,8 +1085,7 @@ export class GameManager extends cc.Component {
         });
     }
 
-    private isHeadTouchingQuestion(block: RectData) {
-        const p = this.player;
+    private isHeadTouchingQuestion(p: PlayerData, block: RectData) {
         return p.vy >= 0 && p.y + p.h > block.y && p.y + p.h < block.y + 18;
     }
 
@@ -1096,7 +1111,6 @@ export class GameManager extends cc.Component {
     }
 
     private updateEnemies(dt: number) {
-        const p = this.player;
         this.levels[this.levelIndex].enemies.forEach((e) => {
             if (e.dead) return;
             if (e.type !== "flower") {
@@ -1110,7 +1124,8 @@ export class GameManager extends cc.Component {
             }
             e.node.setPosition(e.x, e.y);
             this.setEntityFrame(e.node, this.getEnemyFrame(e), e.w, e.h, e.vx > 0);
-            if (this.overlap(p, e)) {
+            this.activePlayers().some((p) => {
+                if (e.dead || !this.overlap(p, e)) return false;
                 if (p.vy < -110 && p.y < e.y + e.h) {
                     e.dead = true;
                     e.node.destroy();
@@ -1120,14 +1135,14 @@ export class GameManager extends cc.Component {
                     this.spawnText(e.type === "turtle" ? "+300" : "+200", e.x, e.y + 52, cc.Color.WHITE);
                     this.playEffect("stomp");
                 } else {
-                    this.hurt(false);
+                    this.hurt(false, p);
                 }
-            }
+                return true;
+            });
         });
     }
 
     private updateItems(dt: number) {
-        const p = this.player;
         this.items.forEach((item) => {
             item.vy = Math.max(-MAX_FALL, item.vy - GRAVITY * dt);
             item.x += item.vx * dt;
@@ -1140,20 +1155,20 @@ export class GameManager extends cc.Component {
                 } else item.vx *= -1;
             });
             item.node.setPosition(item.x, item.y);
-            if (this.overlap(p, item)) {
+            const receiver = this.activePlayers().filter((p) => this.overlap(p, item))[0];
+            if (receiver) {
                 item.node.destroy();
                 item.taken = true;
-                this.powerUp();
+                this.powerUp(receiver);
             }
         });
         this.items = this.items.filter((i) => !i.taken);
     }
 
     private updateCoins() {
-        const p = this.player;
         this.levels[this.levelIndex].coins.forEach((coin) => {
             if (coin.taken) return;
-            if (this.overlap(p, { x: coin.x, y: coin.y, w: 28, h: 28 })) {
+            if (this.activePlayers().some((p) => this.overlap(p, { x: coin.x, y: coin.y, w: 28, h: 28 }))) {
                 coin.taken = true;
                 coin.node.destroy();
                 this.coinCount++;
@@ -1195,6 +1210,26 @@ export class GameManager extends cc.Component {
         this.world.setPosition(-VIEW_W / 2 - this.cameraX, WORLD_Y);
     }
 
+    private keepPlayer2OnCamera() {
+        if (!this.player2) return;
+        const p = this.player2;
+        const left = this.cameraX + 8;
+        const right = this.cameraX + VIEW_W - p.w - 8;
+        const nextX = cc.misc.clampf(p.x, left, right);
+        if (nextX !== p.x) {
+            p.x = nextX;
+            p.vx = 0;
+            p.node.setPosition(p.x, p.y);
+        }
+    }
+
+    private activePlayers() {
+        const players: PlayerData[] = [];
+        if (this.player) players.push(this.player);
+        if (this.player2) players.push(this.player2);
+        return players;
+    }
+
     private updateHud() {
         if (this.score > this.highScore) {
             this.highScore = this.score;
@@ -1214,12 +1249,12 @@ export class GameManager extends cc.Component {
         }
     }
 
-    private hurt(forceDeath: boolean) {
-        const p = this.player;
+    private hurt(forceDeath: boolean, p: PlayerData = this.player) {
+        if (!p) return;
         if (!forceDeath && p.invincible > 0) return;
         if (!forceDeath && p.big) {
             p.big = false;
-            this.setPlayerPose(false);
+            this.setPlayerPose(p, false);
             p.invincible = 1.5;
             this.playEffect("hurt");
             return;
@@ -1232,17 +1267,18 @@ export class GameManager extends cc.Component {
             return;
         }
         const spawn = this.levels[this.levelIndex].spawn;
-        p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.invincible = 1.8; p.jumpsUsed = 0;
-        this.setPlayerPose(false);
+        const spawnOffset = p.slot === "p2" ? 56 : 0;
+        p.x = spawn.x + spawnOffset; p.y = spawn.y; p.vx = 0; p.vy = 0; p.invincible = 1.8; p.jumpsUsed = 0;
+        this.setPlayerPose(p, false);
     }
 
-    private powerUp() {
-        if (!this.player.big) {
-            this.player.big = true;
-            this.setPlayerPose(this.player.crouching);
+    private powerUp(p: PlayerData) {
+        if (!p.big) {
+            p.big = true;
+            this.setPlayerPose(p, p.crouching);
         }
         this.score += 500;
-        this.spawnText("POWER UP", this.player.x - 18, this.player.y + this.player.h + 22, new cc.Color(255, 224, 112));
+        this.spawnText("POWER UP", p.x - 18, p.y + p.h + 22, new cc.Color(255, 224, 112));
         this.playEffect("power");
     }
 
@@ -1253,8 +1289,12 @@ export class GameManager extends cc.Component {
     private onKeyDown(event: cc.Event.EventKeyboard) {
         const wasDown = this.keys[event.keyCode];
         this.keys[event.keyCode] = true;
-        if (!wasDown && this.state === "playing" && this.isJumpKey(event.keyCode)) this.jumpQueued = true;
-        if (!wasDown && this.state === "playing" && this.isDownKey(event.keyCode)) this.fastFallQueued = true;
+        if (!wasDown && this.state === "playing") {
+            if (this.player && this.isP1JumpKey(event.keyCode)) this.player.jumpQueued = true;
+            if (this.player2 && this.isP2JumpKey(event.keyCode)) this.player2.jumpQueued = true;
+            if (this.player && this.isP1DownKey(event.keyCode)) this.player.fastFallQueued = true;
+            if (this.player2 && this.isP2DownKey(event.keyCode)) this.player2.fastFallQueued = true;
+        }
         if (event.keyCode === cc.macro.KEY.p && this.state === "playing") this.showOverlay("paused");
         if (event.keyCode === cc.macro.KEY.b && (this.state === "playing" || this.state === "paused")) this.openScoreboard("paused");
     }
@@ -1263,12 +1303,20 @@ export class GameManager extends cc.Component {
         this.keys[event.keyCode] = false;
     }
 
-    private isJumpKey(keyCode: number) {
+    private isP1JumpKey(keyCode: number) {
         return keyCode === cc.macro.KEY.w || keyCode === cc.macro.KEY.up || keyCode === cc.macro.KEY.space;
     }
 
-    private isDownKey(keyCode: number) {
+    private isP2JumpKey(keyCode: number) {
+        return keyCode === KEY_I;
+    }
+
+    private isP1DownKey(keyCode: number) {
         return keyCode === cc.macro.KEY.s || keyCode === cc.macro.KEY.down;
+    }
+
+    private isP2DownKey(keyCode: number) {
+        return keyCode === KEY_K;
     }
 
     private label(text: string, x: number, y: number, size: number, color: cc.Color, align: cc.Label.HorizontalAlign) {
@@ -1434,14 +1482,18 @@ export class GameManager extends cc.Component {
         }
     }
 
+    private tintEntity(node: cc.Node, tint: cc.Color) {
+        const visual = node.getChildByName("Visual");
+        if (visual) visual.color = tint;
+    }
+
     private getMarioFrame(big: boolean, index: number): cc.SpriteFrame {
         const atlasKey = big ? "marioBig" : "marioSmall";
         const prefix = big ? "mario_big" : "mario_small";
         return this.atlasFrame(atlasKey, `${prefix}_${index}`) || this.atlasFrame(atlasKey, `${prefix}_0`);
     }
 
-    private updatePlayerSprite() {
-        const p = this.player;
+    private updatePlayerSprite(p: PlayerData) {
         let index = 0;
         if (p.crouching && p.onGround) index = 14;
         else if (!p.onGround) index = 5;
