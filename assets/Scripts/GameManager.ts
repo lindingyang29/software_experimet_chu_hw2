@@ -118,10 +118,6 @@ const BIG_W = 48;
 const BIG_H = 72;
 const SMALL_CROUCH_H = 34;
 const BIG_CROUCH_H = 44;
-const KEY_I = 73;
-const KEY_J = 74;
-const KEY_K = 75;
-const KEY_L = 76;
 const FIREBASE_CONFIG = {
     apiKey: "AIzaSyDvjVrLkf7x-8jbe0iJYrdkDhD3TEsx8-o",
     authDomain: "softwaremario.firebaseapp.com",
@@ -1094,15 +1090,15 @@ export class GameManager extends cc.Component {
     private playerControls(p: PlayerData) {
         if (p.slot === "p2") {
             return {
-                left: !!this.keys[KEY_J],
-                right: !!this.keys[KEY_L],
-                down: !!this.keys[KEY_K]
+                left: !!this.keys[cc.macro.KEY.a],
+                right: !!this.keys[cc.macro.KEY.d],
+                down: !!this.keys[cc.macro.KEY.s]
             };
         }
         return {
-            left: !!(this.keys[cc.macro.KEY.a] || this.keys[cc.macro.KEY.left]),
-            right: !!(this.keys[cc.macro.KEY.d] || this.keys[cc.macro.KEY.right]),
-            down: !!(this.keys[cc.macro.KEY.s] || this.keys[cc.macro.KEY.down])
+            left: !!this.keys[cc.macro.KEY.left],
+            right: !!this.keys[cc.macro.KEY.right],
+            down: !!this.keys[cc.macro.KEY.down]
         };
     }
 
@@ -1375,19 +1371,19 @@ export class GameManager extends cc.Component {
     }
 
     private isP1JumpKey(keyCode: number) {
-        return keyCode === cc.macro.KEY.w || keyCode === cc.macro.KEY.up || keyCode === cc.macro.KEY.space;
+        return keyCode === cc.macro.KEY.up || keyCode === cc.macro.KEY.space;
     }
 
     private isP2JumpKey(keyCode: number) {
-        return keyCode === KEY_I;
+        return keyCode === cc.macro.KEY.w;
     }
 
     private isP1DownKey(keyCode: number) {
-        return keyCode === cc.macro.KEY.s || keyCode === cc.macro.KEY.down;
+        return keyCode === cc.macro.KEY.down;
     }
 
     private isP2DownKey(keyCode: number) {
-        return keyCode === KEY_K;
+        return keyCode === cc.macro.KEY.s;
     }
 
     private label(text: string, x: number, y: number, size: number, color: cc.Color, align: cc.Label.HorizontalAlign) {
